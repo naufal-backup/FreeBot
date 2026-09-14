@@ -9,27 +9,28 @@ var index_default = {
       return new Response("Forbidden", { status: 403 });
     }
     let update;
-    try {
-      update = await request.json();
-    } catch {
-      return new Response("OK", { status: 200 });
-    }
+try {
+  update = await request.json();
+} catch {
+  return new Response("OK", { status: 200 });
+}
 
-    // --- PENGAMAN IDEMPOTENCY (MENCEGAH DUPLIKASI REQUEST) ---
-    const updateId = update?.update_id;
-    if (updateId && env.DB) {
-      try {
-        const existing = await env.DB.prepare("SELECT update_id FROM processed_updates WHERE update_id = ?").bind(updateId).first();
-        if (existing) {
-          return new Response("OK", { status: 200 });
-        }
-        await env.DB.prepare("INSERT OR IGNORE INTO processed_updates (update_id, created_at) VALUES (?, ?)").bind(updateId, Date.now()).run();
-      } catch (err) {
-        console.error("Idempotency check error:", err);
-      }
+// --- TAMBAHKAN KODE INI UNTUK CEK IDEMPOTENCY ---
+const updateId = update?.update_id;
+if (updateId && env.DB) {
+  try {
+    // Cek apakah update_id sudah pernah diproses
+    const existing = await env.DB.prepare("SELECT update_id FROM processed_updates WHERE update_id = ?").bind(updateId).first();
+    if (existing) {
+      return new Response("OK", { status: 200 }); // Abaikan duplikat request
     }
-    // ---------------------------------------------------------
-
+    // Simpan update_id baru (dengan masa kedaluwarsa opsional atau langsung simpan)
+    await env.DB.prepare("INSERT OR IGNORE INTO processed_updates (update_id, created_at) VALUES (?, ?)").bind(updateId, Date.now()).run();
+  } catch (err) {
+    console.error("Idempotency check error:", err);
+  }
+}
+// ------------------------------------------------
     const chatId = update?.message?.chat?.id;
     const voiceInfo = update?.message?.voice;
     const photoInfo = update?.message?.photo;
@@ -344,6 +345,83 @@ var index_default = {
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, `API dikembalikan ke default: ${DEFAULT_API_BASE}`);
       return new Response("OK", { status: 200 });
     }
+    // if (cmdWord === "/newproject") {
+    //   const args = cmdArg.split(/\s+/).filter(Boolean);
+    //   const projName = (args[0] || "").toLowerCase();
+    //   const template = (args[1] || "worker-hello").toLowerCase();
+    //   if (!/^[a-z0-9][a-z0-9-]{2,49}$/.test(projName)) {
+    //     // await sendTelegram(
+    //     //   env.TELEGRAM_TOKEN,
+    //     //   chatId,
+    //     //   "Format: /newproject <nama> [template]\nnama: huruf kecil, angka, strip; 3-50 karakter.\nTemplate: custom-project | worker-hello | worker-api | ai-chat"
+    //     // );
+    //     // return new Response("OK", { status: 200 });
+    //   }
+    //   if (!env.DB) {
+    //     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "D1 belum dikonfigurasi. Hubungi admin.");
+    //     return new Response("OK", { status: 200 });
+    //   }
+    //   const pat = await getServiceToken(env, fromId, "github");
+    //   if (!pat) {
+    //     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "GitHub belum tersambung. Kirim /login-gh dulu.");
+    //     return new Response("OK", { status: 200 });
+    //   }
+    //   const githubLogin = await validateGithubToken(pat);
+    //   if (!githubLogin) {
+    //     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Token GitHub tidak valid. Kirim /token-gh baru lalu ulangi.");
+    //     return new Response("OK", { status: 200 });
+    //   }
+    //   const files = renderTemplate(template, projName);
+    //   if (!files) {
+    //     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Template tidak dikenal: gunakan custom-project, worker-hello, worker-api, atau ai-chat.");
+    //     return new Response("OK", { status: 200 });
+    //   }
+    //   const totalBytes = files.reduce((s, f) => s + f.size, 0);
+    //   const quota = Number(env.STORAGE_QUOTA_BYTES || 400 * 1024 * 1024);
+    //   const usage = await getStorageUsage(env);
+    //   if (usage + totalBytes > quota * 0.95) {
+    //     await sendTelegram(
+    //       env.TELEGRAM_TOKEN,
+    //       chatId,
+    //       `Storage D1 hampir penuh (${fmtBytes(usage + totalBytes)} / ${fmtBytes(quota)}). Kirim /cleanup untuk melihat rekomendasi hapus, atau /storage.`
+    //     );
+    //     return new Response("OK", { status: 200 });
+    //   }
+    //   const dup = await env.DB.prepare("SELECT id FROM projects WHERE name = ?").bind(projName).first();
+    //   if (dup) {
+    //     await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Project "${projName}" sudah ada (termasuk punya user lain). Pilih nama lain.`);
+    //     return new Response("OK", { status: 200 });
+    //   }
+    //   try {
+    //     await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Membuat project "${projName}" (${template})...`);
+    //     const repo = await createGithubRepo(pat, projName);
+    //     const fullName = repo.full_name;
+    //     const pushed = await pushFilesToGithub(pat, fullName, files);
+    //     if (!pushed) {
+    //       await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Repo ${fullName} dibuat tapi push file gagal. Coba /purge lalu ulangi.`);
+    //       return new Response("OK", { status: 200 });
+    //     }
+    //     const now = Date.now();
+    //     await env.DB.prepare(
+    //       "INSERT INTO projects (name, owner_id, github_repo, total_bytes, created_at, last_accessed_at) VALUES (?, ?, ?, ?, ?, ?)"
+    //     ).bind(projName, String(fromId), fullName, totalBytes, now, now).run();
+    //     const projRow = await env.DB.prepare("SELECT id FROM projects WHERE name = ?").bind(projName).first();
+    //     await env.DB.batch(
+    //       files.map(
+    //         (f) => env.DB.prepare("INSERT INTO project_files (project_id, path, content, size) VALUES (?, ?, ?, ?)").bind(projRow.id, f.path, f.content, f.size)
+    //       )
+    //     );
+    //     await sendTelegram(
+    //       env.TELEGRAM_TOKEN,
+    //       chatId,
+    //       `Project jadi: ${fullName}\nFile: ${files.length} (${fmtBytes(totalBytes)})\nRepo: https://github.com/${fullName}\nSimpanan: ${fmtBytes(usage + totalBytes)} / ${fmtBytes(quota)}`
+    //     );
+    //   } catch (err) {
+    //     console.error(err);
+    //     await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Gagal buat project: ${err.message}`);
+    //   }
+    //   return new Response("OK", { status: 200 });
+    // }
     if (cmdWord === "/projects") {
       if (!env.DB) {
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, "D1 belum dikonfigurasi.");
@@ -504,7 +582,7 @@ var index_default = {
       }
       const systemPrompt = `Kamu adalah bot Telegram AI bernama "My Assist". Identitas: "aku adalah bot buatan Naufal Alamsyah menggunakan model ${AI_MODEL}". Jika ditanya identitas, jawab persis kalimat tersebut.
 
-PENTING — GUNAKAN RIWAYAT CHAT: Pesan-pesan sebelum pesan terbaru adalah riwayat percakapan yang BISA kamu baca. Gunakan konteks itu saat menjawab. Jika user bertanya "tadi kita ngomong apa", "lanjutkan", "ingat?" atau merujuk obrolan sebelumnya, jawab berdasarkan riwayat yang tersedia, JANGAN mengaku tidak ingat selama konteksnya ada di riwayat.
+PENTING \u2014 GUNAKAN RIWAYAT CHAT: Pesan-pesan sebelum pesan terbaru adalah riwayat percakapan yang BISA kamu baca. Gunakan konteks itu saat menjawab. Jika user bertanya "tadi kita ngomong apa", "lanjutkan", "ingat?" atau merujuk obrolan sebelumnya, jawab berdasarkan riwayat yang tersedia, JANGAN mengaku tidak ingat selama konteksnya ada di riwayat.
 
 GAYA JAWABAN: Jawab SEPENDEK-PENDEKNYA dan langsung ke inti. Untuk pertanyaan sederhana (ya/tidak, angka, fakta cepat, sapa, "halo"), jawab 1-2 kalimat tanpa basa-basi, tanpa pendahuluan, tanpa penutup. Jangan menjelaskan proses berpikirmu. Hanya perjelas bila diminta.
 
@@ -515,7 +593,6 @@ Kamu memiliki akses tool yang bisa kamu panggil saat dibutuhkan:
 - list_models, switch_model: kelola model AI
 - newproject: buat project baru (HANYA eksekusi jika user mengonfirmasi dengan jelas)
 - purge_project: hapus project dari D1 (HANYA eksekusi jika user mengonfirmasi dengan jelas)
-- check_github_auth, list_github_repos, delete_github_repo, commit_and_push, list_commits, set_repo_visibility: kelola GitHub
 
 Gunakan tool secara aktif saat dibutuhkan. Jangan menjawab "aku tidak tahu" untuk pertanyaan yang bisa dijawab dengan tool.`;
 
@@ -633,10 +710,107 @@ var TOOL_DEFINITIONS = [
     }
   },
   {
+  type: "function",
+  function: {
+    name: "bulk_delete_github_repos",
+    description: "Hapus beberapa repositori dari GitHub secara massal berdasarkan daftar nama. HANYA eksekusi jika user mengonfirmasi dengan jelas.",
+    parameters: {
+      type: "object",
+      properties: {
+        repo_names: {
+          type: "array",
+          items: { type: "string" },
+          description: "Daftar nama lengkap repositori yang akan dihapus (contoh: ['username/repo1', 'username/repo2'])"
+        }
+      },
+      required: ["repo_names"]
+    }
+  }
+},
+  {
+    type: "function",
+    function: {
+      name: "set_repo_visibility",
+      description: "Ubah status visibilitas repositori GitHub antara private atau public.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" },
+          private: { type: "boolean", description: "True untuk private, false untuk public" }
+        },
+        required: ["repo_name", "private"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "commit_and_push",
+      description: "Commit dan push perubahan file baru ke repositori GitHub yang sudah ada.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" },
+          commit_message: { type: "string", description: "Pesan commit" },
+          file_path: { type: "string", description: "Path file yang akan diubah/ditambahkan (contoh: src/index.js)" },
+          file_content: { type: "string", description: "Isi konten file yang baru" }
+        },
+        required: ["repo_name", "commit_message", "file_path", "file_content"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "commit_and_push",
+      description: "Commit dan push perubahan file baru ke repositori GitHub yang sudah ada.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" },
+          commit_message: { type: "string", description: "Pesan commit" },
+          file_path: { type: "string", description: "Path file yang akan diubah/ditambahkan (contoh: src/index.js)" },
+          file_content: { type: "string", description: "Isi konten file yang baru" }
+        },
+        required: ["repo_name", "commit_message", "file_path", "file_content"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_github_repo",
+      description: 'Hapus repositori dari GitHub. HANYA eksekusi jika user mengonfirmasi dengan jelas (misal: "iya, hapus repo pemilik/nama-repo").',
+      parameters: {
+        type: "object",
+        properties: {
+          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" }
+        },
+        required: ["repo_name"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_github_repos",
+      description: "Tampilkan daftar repositori GitHub milik user yang tersambung.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
     type: "function",
     function: {
       name: "get_current_time",
       description: "Dapatkan waktu dan tanggal sekarang (UTC dan WIB).",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_github_auth",
+      description: "Cek status autentikasi GitHub user (apakah PAT tersimpan dan valid serta menampilkan username GitHub).",
       parameters: { type: "object", properties: {} }
     }
   },
@@ -690,7 +864,7 @@ var TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "newproject",
-      description: 'Buat project baru + repo GitHub. HANYA eksekusi jika user mengonfirmasi dengan jelas dalam pesannya (misal: "iya, buatkan" atau "ya, buat project toko-api").',
+      description: 'HAPUS ATAU JANGAN DIPANGGIL OTOMATIS jika user mengetik command manual.',
       parameters: {
         type: "object",
         properties: {
@@ -718,82 +892,6 @@ var TOOL_DEFINITIONS = [
         required: ["name"]
       }
     }
-  },
-  {
-    type: "function",
-    function: {
-      name: "check_github_auth",
-      description: "Cek status autentikasi GitHub user (apakah PAT tersimpan dan valid serta menampilkan username GitHub).",
-      parameters: { type: "object", properties: {} }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "list_github_repos",
-      description: "Tampilkan daftar repositori GitHub milik user yang tersambung.",
-      parameters: { type: "object", properties: {} }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "delete_github_repo",
-      description: 'Hapus repositori dari GitHub. HANYA eksekusi jika user mengonfirmasi dengan jelas.',
-      parameters: {
-        type: "object",
-        properties: {
-          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" }
-        },
-        required: ["repo_name"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "commit_and_push",
-      description: "Commit dan push perubahan file baru ke repositori GitHub yang sudah ada.",
-      parameters: {
-        type: "object",
-        properties: {
-          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" },
-          commit_message: { type: "string", description: "Pesan commit" },
-          file_path: { type: "string", description: "Path file yang akan diubah/ditambahkan" },
-          file_content: { type: "string", description: "Isi konten file yang baru" }
-        },
-        required: ["repo_name", "commit_message", "file_path", "file_content"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "list_commits",
-      description: "Tampilkan daftar commit terbaru dari sebuah repositori GitHub.",
-      parameters: {
-        type: "object",
-        properties: {
-          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" }
-        },
-        required: ["repo_name"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "set_repo_visibility",
-      description: "Ubah status visibilitas repositori GitHub antara private atau public.",
-      parameters: {
-        type: "object",
-        properties: {
-          repo_name: { type: "string", description: "Nama lengkap repositori (contoh: username/nama-repo)" },
-          private: { type: "boolean", description: "True untuk private, false untuk public" }
-        },
-        required: ["repo_name", "private"]
-      }
-    }
   }
 ];
 async function executeTool(toolCall, env, chatId, fromId) {
@@ -817,6 +915,214 @@ async function executeTool(toolCall, env, chatId, fromId) {
         const day = days[wib.getUTCDay()];
         const date = wib.toISOString().slice(0, 10);
         return `Waktu sekarang: ${day}, ${date} ${wibStr}\n(UTC: ${utc})`;
+      }
+      case "bulk_delete_github_repos": {
+     const repoNames = args.repo_names || [];
+     if (!Array.isArray(repoNames) || repoNames.length === 0) return "Daftar nama repositori kosong.";
+     if (!env.DB) return "D1 tidak tersedia.";
+     const pat = await getServiceToken(env, fromId, "github");
+     if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+
+     let successCount = 0;
+     let failCount = 0;
+     const details = [];
+
+     for (const repoName of repoNames) {
+       try {
+         const res = await fetch(`https://api.github.com/repos/${repoName}`, {
+           method: "DELETE",
+           headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "User-Agent": "telegram-ai-bot" }
+         });
+         if (res.status === 204) {
+           successCount++;
+           details.push(`- ${repoName}: Berhasil dihapus`);
+         } else {
+           failCount++;
+           const data = await res.json().catch(() => ({}));
+           details.push(`- ${repoName}: Gagal (${data?.message || res.status})`);
+         }
+       } catch (err) {
+         failCount++;
+         details.push(`- ${repoName}: Error (${err.message})`);
+       }
+     }
+
+     return `Bulk delete selesai.\nBerhasil: ${successCount}\nGagal: ${failCount}\n\nDetail:\n${details.join("\n")}`;
+   }
+      case "set_repo_visibility": {
+        const repoName = args.repo_name || "";
+        const isPrivate = Boolean(args.private);
+        if (!repoName) return "Nama repositori wajib diisi.";
+        if (!env.DB) return "D1 tidak tersedia.";
+        const pat = await getServiceToken(env, fromId, "github");
+        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+        try {
+          const res = await fetch(`https://api.github.com/repos/${repoName}`, {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${pat}`,
+              Accept: "application/vnd.github+json",
+              "Content-Type": "application/json",
+              "User-Agent": "telegram-ai-bot"
+            },
+            body: JSON.stringify({ private: isPrivate })
+          });
+          const data = await res.json();
+          if (!res.ok) return `Gagal mengubah visibilitas: ${data?.message || res.status}`;
+          return `Visibilitas repositori "${repoName}" berhasil diubah menjadi ${isPrivate ? "private" : "public"}.`;
+        } catch (err) {
+          return `Error saat mengubah visibilitas repo: ${err.message}`;
+        }
+      }
+      case "delete_github_repo": {
+        const repoName = args.repo_name || "";
+        if (!repoName) return "Nama repositori tidak boleh kosong.";
+        if (!env.DB) return "D1 tidak tersedia.";
+        const pat = await getServiceToken(env, fromId, "github");
+        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+        try {
+          const res = await fetch(`https://api.github.com/repos/${repoName}`, {
+            method: "DELETE",
+            headers: {
+              Authorization: `Bearer ${pat}`,
+              Accept: "application/vnd.github+json",
+              "User-Agent": "telegram-ai-bot"
+            }
+          });
+          if (res.status === 204) {
+            return `Repositori "${repoName}" berhasil dihapus dari GitHub.`;
+          }
+          const data = await res.json().catch(() => ({}));
+          return `Gagal menghapus repo: ${data?.message || res.status}`;
+        } catch (err) {
+          return `Error saat menghapus repo GitHub: ${err.message}`;
+        }
+      }
+      case "list_commits": {
+        const repoName = args.repo_name || "";
+        if (!repoName) return "Nama repositori wajib diisi.";
+        if (!env.DB) return "D1 tidak tersedia.";
+        const pat = await getServiceToken(env, fromId, "github");
+        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+        try {
+          const res = await fetch(`https://api.github.com/repos/${repoName}/commits?per_page=10`, {
+            headers: {
+              Authorization: `Bearer ${pat}`,
+              Accept: "application/vnd.github+json",
+              "User-Agent": "telegram-ai-bot"
+            }
+          });
+          if (!res.ok) return "Gagal mengambil daftar commit dari GitHub.";
+          const commits = await res.json();
+          if (!Array.isArray(commits) || commits.length === 0) return "Belum ada commit di repo ini.";
+          return commits.map((c) => `- [${c.sha.slice(0, 7)}] ${c.commit.message.split("\n")[0]} (${c.commit.author.name})`).join("\n");
+        } catch (err) {
+          return `Error saat mengambil daftar commit: ${err.message}`;
+        }
+      }
+      case "commit_and_push": {
+        const repoName = args.repo_name || "";
+        const commitMessage = args.commit_message || "Update via bot";
+        const filePath = args.file_path || "";
+        const fileContent = args.file_content || "";
+        if (!repoName || !filePath) return "Nama repo dan path file wajib diisi.";
+        if (!env.DB) return "D1 tidak tersedia.";
+        const pat = await getServiceToken(env, fromId, "github");
+        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+        try {
+          const headers = {
+            Authorization: `Bearer ${pat}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "User-Agent": "telegram-ai-bot"
+          };
+          const base = `https://api.github.com/repos/${repoName}`;
+          
+          // 1. Get default branch & latest commit sha
+          const refRes = await fetch(`${base}/git/ref/heads/main`, { headers });
+          if (!refRes.ok) return "Gagal mengambil referensi branch main.";
+          const refData = await refRes.json();
+          const latestCommitSha = refData.object.sha;
+
+          const commitRes = await fetch(`${base}/git/commits/${latestCommitSha}`, { headers });
+          if (!commitRes.ok) return "Gagal mengambil commit terakhir.";
+          const commitData = await commitRes.json();
+          const baseTreeSha = commitData.tree.sha;
+
+          // 2. Create blob
+          const blobRes = await fetch(`${base}/git/blobs`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ content: fileContent, encoding: "utf-8" })
+          });
+          if (!blobRes.ok) return "Gagal membuat git blob.";
+          const blobData = await blobRes.json();
+
+          // 3. Create tree
+          const treeRes = await fetch(`${base}/git/trees`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              base_tree: baseTreeSha,
+              tree: [{ path: filePath, mode: "100644", type: "blob", sha: blobData.sha }]
+            })
+          });
+          if (!treeRes.ok) return "Gagal membuat git tree.";
+          const treeData = await treeRes.json();
+
+          // 4. Create new commit
+          const newCommitRes = await fetch(`${base}/git/commits`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              message: commitMessage,
+              tree: treeData.sha,
+              parents: [latestCommitSha]
+            })
+          });
+          if (!newCommitRes.ok) return "Gagal membuat commit baru.";
+          const newCommitData = await newCommitRes.json();
+
+          // 5. Update ref
+          const updateRefRes = await fetch(`${base}/git/refs/heads/main`, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({ sha: newCommitData.sha, force: false })
+          });
+          if (!updateRefRes.ok) return "Gagal push pembaruan ke branch main.";
+
+          return `Berhasil commit & push file "${filePath}" ke ${repoName}.`;
+        } catch (err) {
+          return `Error saat commit & push: ${err.message}`;
+        }
+      }
+      case "list_github_repos": {
+        if (!env.DB) return "D1 tidak tersedia.";
+        const pat = await getServiceToken(env, fromId, "github");
+        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+        try {
+          const res = await fetch("https://api.github.com/user/repos?per_page=30&sort=updated", {
+            headers: {
+              Authorization: `Bearer ${pat}`,
+              Accept: "application/vnd.github+json",
+              "User-Agent": "telegram-ai-bot"
+            }
+          });
+          if (!res.ok) return "Gagal mengambil daftar repositori dari GitHub.";
+          const repos = await res.json();
+          if (!Array.isArray(repos) || repos.length === 0) return "Belum ada repositori.";
+          return repos.map((r) => `- ${r.full_name} (${r.private ? "private" : "public"})`).join("\n");
+        } catch {
+          return "Error saat mengambil daftar repo GitHub.";
+        }
+      }
+      case "check_github_auth": {
+        if (!env.DB) return "D1 tidak tersedia.";
+        const pat = await getServiceToken(env, fromId, "github");
+        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+        const githubLogin = await validateGithubToken(pat);
+        if (!githubLogin) return "Token GitHub tersimpan tetapi tidak valid atau sudah expired.";
+        return `GitHub tersambung sebagai @${githubLogin}.`;
       }
       case "list_projects": {
         if (!env.DB) return "D1 tidak tersedia.";
@@ -854,7 +1160,7 @@ async function executeTool(toolCall, env, chatId, fromId) {
         await setActiveModel(env, chatId, model);
         return `Model sesi ini diganti ke: ${model}`;
       }
-      case "newproject": {
+case "newproject": {
         const projName = (args.name || "").toLowerCase();
         const template = args.template || "worker-hello";
         if (!/^[a-z0-9][a-z0-9-]{2,49}$/.test(projName))
@@ -886,6 +1192,7 @@ async function executeTool(toolCall, env, chatId, fromId) {
             }
           }
 
+          // Coba push file, tangkap jika error karena repo kosong/sudah ada isinya
           try {
             await pushFilesToGithub(pat, repo.full_name, files);
           } catch (pushErr) {
@@ -902,6 +1209,7 @@ async function executeTool(toolCall, env, chatId, fromId) {
             await env.DB.batch(files.map((f) => env.DB.prepare("INSERT OR IGNORE INTO project_files (project_id, path, content, size) VALUES (?, ?, ?, ?)").bind(projRow.id, f.path, f.content, f.size)));
           }
 
+          // Verifikasi senyap via list/get repo ke GitHub
           const verifyRes = await fetch(`https://api.github.com/repos/${repo.full_name}`, {
             headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "User-Agent": "telegram-ai-bot" }
           });
@@ -909,7 +1217,7 @@ async function executeTool(toolCall, env, chatId, fromId) {
           if (verifyRes.ok) {
             return `Repository dan project "${projName}" sudah berhasil dibuat.\nURL: https://github.com/${repo.full_name}\nFile: ${files.length} (${fmtBytes(totalBytes)})`;
           } else {
-            return `Project "${projName}" sudah berhasil dibuat di GitHub.`;
+            return `Project "${projName}" berhasil dibuat di GitHub.`;
           }
         } catch (err) {
           if (err.message && (err.message.includes("name already exists") || err.message.includes("Repository creation failed") || err.message.includes("empty"))) {
@@ -926,135 +1234,6 @@ async function executeTool(toolCall, env, chatId, fromId) {
         if (!row) return `Project "${projName}" tidak ditemukan.`;
         await env.DB.batch([env.DB.prepare("DELETE FROM project_files WHERE project_id = ?").bind(row.id), env.DB.prepare("DELETE FROM projects WHERE id = ?").bind(row.id)]);
         return `Project "${projName}" dihapus dari D1. Repo GitHub tetap ada.`;
-      }
-      case "check_github_auth": {
-        if (!env.DB) return "D1 tidak tersedia.";
-        const pat = await getServiceToken(env, fromId, "github");
-        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
-        const githubLogin = await validateGithubToken(pat);
-        if (!githubLogin) return "Token GitHub tersimpan tetapi tidak valid atau sudah expired.";
-        return `GitHub tersambung sebagai @${githubLogin}.`;
-      }
-      case "list_github_repos": {
-        if (!env.DB) return "D1 tidak tersedia.";
-        const pat = await getServiceToken(env, fromId, "github");
-        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
-        try {
-          const res = await fetch("https://api.github.com/user/repos?per_page=30&sort=updated", {
-            headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "User-Agent": "telegram-ai-bot" }
-          });
-          if (!res.ok) return "Gagal mengambil daftar repositori dari GitHub.";
-          const repos = await res.json();
-          if (!Array.isArray(repos) || repos.length === 0) return "Belum ada repositori.";
-          return repos.map((r) => `- ${r.full_name} (${r.private ? "private" : "public"})`).join("\n");
-        } catch {
-          return "Error saat mengambil daftar repo GitHub.";
-        }
-      }
-      case "delete_github_repo": {
-        const repoName = args.repo_name || "";
-        if (!repoName) return "Nama repositori tidak boleh kosong.";
-        if (!env.DB) return "D1 tidak tersedia.";
-        const pat = await getServiceToken(env, fromId, "github");
-        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
-        try {
-          const res = await fetch(`https://api.github.com/repos/${repoName}`, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "User-Agent": "telegram-ai-bot" }
-          });
-          if (res.status === 204) return `Repositori "${repoName}" berhasil dihapus dari GitHub.`;
-          const data = await res.json().catch(() => ({}));
-          return `Gagal menghapus repo: ${data?.message || res.status}`;
-        } catch (err) {
-          return `Error saat menghapus repo GitHub: ${err.message}`;
-        }
-      }
-      case "commit_and_push": {
-        const repoName = args.repo_name || "";
-        const commitMessage = args.commit_message || "Update via bot";
-        const filePath = args.file_path || "";
-        const fileContent = args.file_content || "";
-        if (!repoName || !filePath) return "Nama repo dan path file wajib diisi.";
-        if (!env.DB) return "D1 tidak tersedia.";
-        const pat = await getServiceToken(env, fromId, "github");
-        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
-        try {
-          const headers = { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "telegram-ai-bot" };
-          const base = `https://api.github.com/repos/${repoName}`;
-          const refRes = await fetch(`${base}/git/ref/heads/main`, { headers });
-          if (!refRes.ok) return "Gagal mengambil referensi branch main.";
-          const refData = await refRes.json();
-          const latestCommitSha = refData.object.sha;
-
-          const commitRes = await fetch(`${base}/git/commits/${latestCommitSha}`, { headers });
-          if (!commitRes.ok) return "Gagal mengambil commit terakhir.";
-          const commitData = await commitRes.json();
-          const baseTreeSha = commitData.tree.sha;
-
-          const blobRes = await fetch(`${base}/git/blobs`, {
-            method: "POST", headers, body: JSON.stringify({ content: fileContent, encoding: "utf-8" })
-          });
-          if (!blobRes.ok) return "Gagal membuat git blob.";
-          const blobData = await blobRes.json();
-
-          const treeRes = await fetch(`${base}/git/trees`, {
-            method: "POST", headers, body: JSON.stringify({ base_tree: baseTreeSha, tree: [{ path: filePath, mode: "100644", type: "blob", sha: blobData.sha }] })
-          });
-          if (!treeRes.ok) return "Gagal membuat git tree.";
-          const treeData = await treeRes.json();
-
-          const newCommitRes = await fetch(`${base}/git/commits`, {
-            method: "POST", headers, body: JSON.stringify({ message: commitMessage, tree: treeData.sha, parents: [latestCommitSha] })
-          });
-          if (!newCommitRes.ok) return "Gagal membuat commit baru.";
-          const newCommitData = await newCommitRes.json();
-
-          const updateRefRes = await fetch(`${base}/git/refs/heads/main`, {
-            method: "PATCH", headers, body: JSON.stringify({ sha: newCommitData.sha, force: false })
-          });
-          if (!updateRefRes.ok) return "Gagal push pembaruan ke branch main.";
-          return `Berhasil commit & push file "${filePath}" ke ${repoName}.`;
-        } catch (err) {
-          return `Error saat commit & push: ${err.message}`;
-        }
-      }
-      case "list_commits": {
-        const repoName = args.repo_name || "";
-        if (!repoName) return "Nama repositori wajib diisi.";
-        if (!env.DB) return "D1 tidak tersedia.";
-        const pat = await getServiceToken(env, fromId, "github");
-        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
-        try {
-          const res = await fetch(`https://api.github.com/repos/${repoName}/commits?per_page=10`, {
-            headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "User-Agent": "telegram-ai-bot" }
-          });
-          if (!res.ok) return "Gagal mengambil daftar commit dari GitHub.";
-          const commits = await res.json();
-          if (!Array.isArray(commits) || commits.length === 0) return "Belum ada commit di repo ini.";
-          return commits.map((c) => `- [${c.sha.slice(0, 7)}] ${c.commit.message.split("\n")[0]} (${c.commit.author.name})`).join("\n");
-        } catch (err) {
-          return `Error saat mengambil daftar commit: ${err.message}`;
-        }
-      }
-      case "set_repo_visibility": {
-        const repoName = args.repo_name || "";
-        const isPrivate = Boolean(args.private);
-        if (!repoName) return "Nama repositori wajib diisi.";
-        if (!env.DB) return "D1 tidak tersedia.";
-        const pat = await getServiceToken(env, fromId, "github");
-        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
-        try {
-          const res = await fetch(`https://api.github.com/repos/${repoName}`, {
-            method: "PATCH",
-            headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "telegram-ai-bot" },
-            body: JSON.stringify({ private: isPrivate })
-          });
-          const data = await res.json();
-          if (!res.ok) return `Gagal mengubah visibilitas: ${data?.message || res.status}`;
-          return `Visibilitas repositori "${repoName}" berhasil diubah menjadi ${isPrivate ? "private" : "public"}.`;
-        } catch (err) {
-          return `Error saat mengubah visibilitas repo: ${err.message}`;
-        }
       }
       default:
         return `Tool "${name}" tidak dikenal.`;
@@ -1095,7 +1274,35 @@ function canonicalIdentityAnswer(text, model) {
   const botRef = /\b(kamu|kau|anda|lu|lo|bot|u)\b/.test(norm);
   if (!botRef) return null;
   const identityWords = [
-    "siapa", "pembuat", "pencipta", "pemilik", "owner", "developer", "dibuat", "membuat", "bikinan", "bikin", "buatan", "ciptaan", "model", "nama", "tentang", "profil", "identitas", "who are you", "who made", "who created", "who built", "who owns", "created by", "your creator", "your model", "your name", "your owner", "made by", "built by"
+    "siapa",
+    "pembuat",
+    "pencipta",
+    "pemilik",
+    "owner",
+    "developer",
+    "dibuat",
+    "membuat",
+    "bikinan",
+    "bikin",
+    "buatan",
+    "ciptaan",
+    "model",
+    "nama",
+    "tentang",
+    "profil",
+    "identitas",
+    "who are you",
+    "who made",
+    "who created",
+    "who built",
+    "who owns",
+    "created by",
+    "your creator",
+    "your model",
+    "your name",
+    "your owner",
+    "made by",
+    "built by"
   ];
   const hasIdentity = identityWords.some((w) => norm.includes(w));
   if (!hasIdentity) return null;
@@ -1229,8 +1436,11 @@ __name(saveChatMemory, "saveChatMemory");
 async function summarizeHistory(env, model, history) {
   try {
     const { base_url, api_key } = await getActiveApi(env);
+    
+    // Berikan AbortController agar jika perangkuman macet lebih dari 30 detik, proses langsung dibatalkan
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3e4);
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
     let res;
     try {
       res = await fetch(`${base_url}/chat/completions`, {
@@ -1245,13 +1455,14 @@ async function summarizeHistory(env, model, history) {
             { role: "system", content: "Kamu adalah perangkum percakapan yang teliti. Buat ringkasan singkat, padat, dan pertahankan konteks penting dalam Bahasa Indonesia. Maksimal 2000 karakter." },
             ...history
           ],
-          max_tokens: 1e3
+          max_tokens: 1000 // Diturunkan sedikit dari 2000 agar tidak terlalu berat/lama
         }),
         signal: controller.signal
       });
     } finally {
       clearTimeout(timeout);
     }
+
     if (!res.ok) return null;
     const data = await res.json();
     const text = data?.choices?.[0]?.message?.content;
@@ -1261,7 +1472,7 @@ async function summarizeHistory(env, model, history) {
     return [{ role: "system", content: `Ringkasan percakapan sebelumnya:\n${trimmed}` }];
   } catch (err) {
     console.error("summarizeHistory error:", err.message);
-    return null;
+    return null; // Jika gagal/stuck, kembalikan null agar bot tidak crash dan langsung pakai 20 pesan terakhir saja
   }
 }
 __name(summarizeHistory, "summarizeHistory");
@@ -1297,7 +1508,7 @@ function renderTemplate(tpl, repoName) {
     put("src/index.js", `/**\n * ${repoName}: AI Chat (openai-compatible)\n * Ganti baseURL + model + apiKey lewat env/secret.\n */\nexport default {\n  async fetch(request, env, ctx) {\n    if (request.method !== 'POST') return new Response('OK', { status: 200 });\n    const body = await request.json().catch(() => ({}));\n    const text = body?.message?.text || body?.text;\n    if (!text) return new Response('OK', { status: 200 });\n    const url = env.AI_URL || 'https://ai.geraikita.com/v1/chat/completions';\n    const res = await fetch(url, {\n      method: 'POST',\n      headers: {\n        'Content-Type': 'application/json',\n        Authorization: \`Bearer \${env.AI_KEY}\`,\n      },\n      body: JSON.stringify({\n        model: env.AI_MODEL || 'deepseek-v4-flash',\n        messages: [{ role: 'user', content: text }],\n      }),\n    });\n    const data = await res.json();\n    const reply = data?.choices?.[0]?.message?.content || 'no reply';\n    return Response.json({ reply });\n  },\n};\n`);
     put("package.json", `{\n  "name": "${repoName}",\n  "version": "0.0.1",\n  "private": true,\n  "type": "module",\n  "scripts": {\n    "dev": "wrangler dev",\n    "deploy": "wrangler deploy"\n  }\n}\n`);
     put(".gitignore", ".wrangler/\nnode_modules/\n.dev.vars\n");
-  } else if (tpl === "custom-project") {
+} else if (tpl === "custom-project") {
     put("README.md", `# ${repoName}\n\nCustom project.\n\n## Getting Started\n\n1. Install dependencies:\n   \`\`\`bash\n   npm install\n   \`\`\`\n\n2. Run project:\n   \`\`\`bash\n   npm start\n   \`\`\`\n`);
     put("package.json", `{\n  "name": "${repoName}",\n  "version": "0.0.1",\n  "private": true,\n  "type": "module",\n  "scripts": {\n    "start": "node index.js"\n  }\n}\n`);
     put("index.js", `console.log("Hello from ${repoName}!");\n`);
@@ -1319,7 +1530,7 @@ async function createGithubRepo(pat, name) {
     },
     body: JSON.stringify({
       name,
-      description: "Generated by telegram-ai-bot",
+      description: "Generated by Naufal-Telegram-Bot",
       private: true,
       auto_init: false,
       has_wiki: false
@@ -1636,3 +1847,4 @@ __name(sendTelegram, "sendTelegram");
 export {
   index_default as default
 };
+//# sourceMappingURL=index.js.map
