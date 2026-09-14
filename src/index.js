@@ -632,21 +632,45 @@ chatId,
       const EXTERNAL_API_URL = `${base_url}/chat/completions`;
       const AI_MODEL = activeModelForId;
 
-      let aiDone = false;
-      ctx.waitUntil(startTypingLoop(env, chatId, () => aiDone));
+      // Kirim pesan "Typing..." sebagai indikator visual, lalu hapus saat selesai
+      let typingMessageId = null;
+      try {
+        const typingRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: 'Typing...' }),
+        });
+        const typingData = await typingRes.json();
+        typingMessageId = typingData?.result?.message_id || null;
+      } catch {} // best-effort
 
       let history = await getChatMemory(env, chatId);
+
+      // Auto-rangkum saat >= 80 entri: ringkasan + 20 pesan terbaru tersimpan,
+      // agar konteks lama dipertahankan ringkas TAPI konteks baru tidak hilang.
       if (history.length >= 80) {
-        const summary = await summarizeHistory(env, AI_MODEL, history);
+        const recent = history.slice(-20);
+        if (typingMessageId) {
+          try {
+            await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/editMessageText`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: chatId, message_id: typingMessageId, text: 'Merangkum..' }),
+            });
+          } catch {}
+        }
+        const summary = await summarizeHistory(env, AI_MODEL, history.slice(0, -20));
         if (summary) {
-          history = summary;
+          history = [...summary, ...recent];
           await saveChatMemory(env, chatId, history);
         } else {
-          history = history.slice(-40);
+          history = recent;
         }
       }
 
       const systemPrompt = `Kamu adalah bot Telegram AI bernama "My Assist". Identitas: "aku adalah bot buatan Naufal Alamsyah menggunakan model ${AI_MODEL}". Jika ditanya identitas, jawab persis kalimat tersebut.
+
+PENTING — GUNAKAN RIWAYAT CHAT: Pesan-pesan sebelum pesan terbaru adalah riwayat percakapan yang BISA kamu baca. Gunakan konteks itu saat menjawab. Jika user bertanya "tadi kita ngomong apa", "lanjutkan", "ingat?" atau merujuk obrolan sebelumnya, jawab berdasarkan riwayat yang tersedia, JANGAN mengaku tidak ingat selama konteksnya ada di riwayat.
 
 GAYA JAWABAN: Jawab SEPENDEK-PENDEKNYA dan langsung ke inti. Untuk pertanyaan sederhana (ya/tidak, angka, fakta cepat, sapa, "halo"), jawab 1-2 kalimat tanpa basa-basi, tanpa pendahuluan, tanpa penutup. Jangan menjelaskan proses berpikirmu. Hanya perjelas bila diminta.
 
@@ -719,7 +743,16 @@ Gunakan tool secara aktif saat dibutuhkan. Jangan menjawab "aku tidak tahu" untu
 
       if (!finalContent) finalContent = 'Maaf, terlalu banyak iterasi tool. Coba jelaskan lebih spesifik.';
 
-      aiDone = true;
+      // Hapus pesan "Typing..." sebelum kirim balasan
+      if (typingMessageId) {
+        try {
+          await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/deleteMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, message_id: typingMessageId }),
+          });
+        } catch {} // best-effort
+      }
 
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
 
@@ -727,7 +760,16 @@ Gunakan tool secara aktif saat dibutuhkan. Jangan menjawab "aku tidak tahu" untu
       await saveChatMemory(env, chatId, history);
     } catch (err) {
       console.error(err);
-      // Best-effort error message, still return 200 below
+      // Hapus "Typing..." jika error, lalu kirim error message
+      if (typingMessageId) {
+        try {
+          await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/deleteMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, message_id: typingMessageId }),
+          });
+        } catch {}
+      }
       try {
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Sorry, something went wrong. Try again.');
       } catch {}
@@ -1234,7 +1276,7 @@ async function summarizeHistory(env, model, history) {
       body: JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: 'Kamu adalah perangkum. Ringkas percakapan berikut menjadi poin-poin padat: topik utama, keputusan, preferensi user, dan hal penting. Bahasa Indonesia. Jangan tambahkan informasi baru. Maksimal 6000 karakter.' },
+          { role: 'system', content: 'Kamu adalah perangkum percakapan yang teliti. Dari isi percakapan berikut, hasilkan ringkasan yang MEMPERTAHANKAN KONTEKS penting dengan lengkap, dalam Bahasa Indonesia: (1) topik-topik yang dibahas, (2) fakta yang user sebut (nama, proyek, angka, preferensi), (3) keputusan/kesepakatan, (4) nada dan hubungan. Tulis sebagai poin-poin jelas, jangan buang detail pada 20 pesan terakhir (itu dikelola terpisah). Jangan menambahkan informasi yang tidak ada. Maksimal 6000 karakter.' },
           ...history,
         ],
         max_tokens: 2000,
@@ -1591,25 +1633,6 @@ function arrayBufferToBase64(buf) {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
-}
-
-/**
- * Loop typing: kirim sendChatAction 'typing' tiap 4 detik sampai bot selesai
- * menjawab, atau mencapai batas aman 15 detik.
- * Dipanggil via ctx.waitUntil agar tidak menambah latensi handler utama.
- */
-async function startTypingLoop(env, chat_id, isDone) {
-  const MAX_MS = 15000;
-  const startedAt = Date.now();
-  try {
-    while (!isDone() && Date.now() - startedAt < MAX_MS) {
-      await sendChatAction(env.TELEGRAM_TOKEN, chat_id);
-      if (isDone()) break;
-      await new Promise((resolve) => setTimeout(resolve, 4000));
-    }
-  } catch {
-    // best-effort: gagal mengirim typing tidak menghentikan alur utama
-  }
 }
 
 /**

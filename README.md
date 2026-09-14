@@ -22,9 +22,11 @@ Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kel
 - **Websearch** — AI bisa cari info dari web saat dibutuhkan
 - **Tool Calling** — AI punya akses eksekusi skill (project, storage, model, waktu, websearch)
 - **Transkripsi Voice Note** — kirim VN, bot transkrip pakai Whisper via Workers AI (gratis, ~214 menit/hari). File audio tidak disimpan permanen.
+- **Markdown Telegram** — bold `**`, italic `*`, code `` ` ``, strikethrough `~~`, tabel pipe, header `#`/`##` otomatis ter-render di Telegram
 - **Identitas tetap** — jawaban "siapa kamu?" deterministik, tidak bisa dimanipulasi
 - **Akses terkunci** — hanya `ALLOWED_USER_IDS` yang boleh pakai
 - **Endpoint privat** — webhook divalidasi `secret_token`
+- **Voice worker terkunci** — URL publik dimatikan, hanya dipanggil via service binding (privat, dalam akun Cloudflare yang sama)
 
 ## Cara Install
 
