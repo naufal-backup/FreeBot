@@ -1,0 +1,13 @@
+# Template — setup.sh akan mengisi database_id + nama yang benar
+name = "freebot"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+STORAGE_QUOTA_BYTES = "419430400"
+
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "telegram-projects"
+# database_id = "<dari wrangler d1 create>"
