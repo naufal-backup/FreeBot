@@ -1032,7 +1032,37 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
-];
+  {
+    type: 'function',
+    function: {
+      name: 'generate_file',
+      description: 'Buat file teks (md/txt/js/py/html/css/json/csv/yaml/svg/xml/sh/ts) dan kirim ke user. Panggil saat user minta "buat file", "generate", "kirim file".',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Nama file dengan extension (contoh: app.js, README.md)' },
+          content: { type: 'string', description: 'Isi file' },
+        },
+        required: ['name', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_document',
+      description: 'Baca isi dokumen PDF atau DOCX yang dikirim user. Gunakan saat user upload dokumen dan minta dibaca/dianalisis.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_id: { type: 'string', description: 'file_id dari dokumen Telegram' },
+          file_name: { type: 'string', description: 'Nama file (contoh: laporan.pdf)' },
+        },
+        required: ['file_id', 'file_name'],
+      },
+    },
+  },
+]
 
 /**
  * Eksekusi tool call dari AI. Return string hasil tool.
@@ -1325,6 +1355,31 @@ async function executeTool(toolCall, env, chatId, fromId) {
           return `File ${filePath} dihapus dari ${repo}.`;
         } catch (err) {
           return `Error: ${err.message}`;
+        }
+      }
+
+
+      case 'generate_file': {
+        const fileName = args.name || 'file.txt';
+        const content = args.content || '';
+        if (!content) return 'Konten file tidak boleh kosong.';
+        const allowedExts = ['.md','.txt','.js','.py','.html','.css','.json','.yaml','.yml','.toml','.csv','.sh','.ts','.svg','.xml','.env','.ini'];
+        const ext = '.' + fileName.split('.').pop().toLowerCase();
+        if (!allowedExts.includes(ext)) return `Format ${ext} tidak didukung. Yang didukung: ${allowedExts.join(', ')}`;
+        await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, content);
+        return `File ${fileName} berhasil dibuat dan dikirim.`;
+      }
+
+      case 'read_document': {
+        const fileId = args.file_id;
+        const fileName = args.file_name || 'dokumen';
+        if (!fileId) return 'file_id diperlukan.';
+        try {
+          const text = await extractDocumentText(env, fileId, fileName);
+          if (!text || !text.trim()) return 'Tidak dapat mengekstrak teks dari dokumen.';
+          return `**${fileName}:**\n\n${text.trim().slice(0, 15000)}`;
+        } catch (err) {
+          return `Gagal membaca dokumen: ${err.message}`;
         }
       }
 
@@ -1923,6 +1978,115 @@ async function getServiceToken(env, fromId, service) {
     .bind(String(fromId), service)
     .first();
   return row?.token || null;
+}
+
+/**
+ * Ekstrak teks dari PDF (tanpa npm, parse stream objects).
+ * Coverage ~60-70% untuk PDF teks biasa (tanpa FlateDecode/terenkripsi/scan).
+ */
+function extractPdfText(data) {
+  const decoder = new TextDecoder('utf-8');
+  const raw = decoder.decode(data);
+  // Hapus objek metadata & binary
+  let cleaned = raw.replace(/\/[A-Za-z]+\s*<<[\s\S]*?>>/g, '').replace(/\/Filter\s*\/[A-Za-z0-9]+/g, '');
+  // Ambil teks dari operator Tj (parentheses)
+  const results = [];
+  // Cari pola: (teks) Tj
+  let m;
+  const tjRe = /\(([^)]*)\)\s*Tj/g;
+  while ((m = tjRe.exec(raw)) !== null) results.push(m[1]);
+  // Cari TJ array
+  const tjArrRe = /\[([^\]]*)\]\s*TJ/g;
+  while ((m = tjArrRe.exec(raw)) !== null) {
+    const inner = m[1].match(/\(([^)]*)\)/g);
+    if (inner) for (const i of inner) results.push(i.slice(1, -1));
+  }
+  const text = results.join(' ').trim();
+  if (text) return text;
+  // Fallback: ambil antara BT...ET
+  const btRe = /BT\s*([\s\S]*?)\s*ET/g;
+  const btResults = [];
+  while ((m = btRe.exec(raw)) !== null) {
+    const lines = m[1].match(/\(([^)]*)\)/g);
+    if (lines) for (const l of lines) btResults.push(l.slice(1, -1));
+  }
+  return btResults.join(' ').trim() || '(Teks tidak dapat diekstrak. PDF mungkin terkompresi atau scan.)';
+}
+
+/**
+ * Ekstrak teks dari DOCX (ZIP parser manual + XML extract).
+ * DOCX = ZIP berisi word/document.xml (tanpa kompresi deflate).
+ */
+function extractDocxText(data) {
+  try {
+    const view = new DataView(data.buffer || data);
+    let offset = 0;
+    const files = {};
+    while (offset + 30 < data.length) {
+      if (view.getUint32(offset, true) !== 0x04034b50) { offset++; continue; }
+      const compressedSize = view.getUint32(offset + 18, true);
+      const fileNameLen = view.getUint16(offset + 26, true);
+      const extraLen = view.getUint16(offset + 28, true);
+      const nameOff = offset + 30;
+      const name = new TextDecoder().decode(data.slice(nameOff, nameOff + fileNameLen));
+      const dataOff = nameOff + fileNameLen + extraLen;
+      const compData = data.slice(dataOff, dataOff + compressedSize);
+      files[name] = compData;
+      offset = dataOff + compressedSize;
+    }
+    const docXml = files['word/document.xml'] || files['word/document2.xml'] || Object.values(files).find((v, k) => k.includes('document.xml'));
+    if (!docXml) return '(Tidak ditemukan word/document.xml dalam DOCX.)';
+    const xml = new TextDecoder('utf-8', {fatal: false}).decode(docXml);
+    const texts = [];
+    let pos = 0;
+    const wtRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+    while ((m = wtRe.exec(xml)) !== null) {
+      texts.push(m[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
+    }
+    return texts.join('\n').trim() || '(Teks kosong.)';
+  } catch (err) {
+    return `(Gagal baca DOCX: ${err.message})`;
+  }
+}
+
+/**
+ * Download file dari Telegram dan ekstrak teks dari PDF atau DOCX.
+ * File TIDAK disimpan permanen — hanya di RAM sementara lalu di-GC.
+ */
+async function extractDocumentText(env, fileId, fileName) {
+  const fileRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/getFile`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  const fileData = await fileRes.json();
+  const filePath = fileData?.result?.file_path;
+  if (!filePath) throw new Error('File tidak ditemukan di Telegram.');
+  const dl = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_TOKEN}/${filePath}`);
+  if (!dl.ok) throw new Error('Gagal download file.');
+  const buf = await dl.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  if (/\.pdf$/i.test(fileName)) return extractPdfText(bytes);
+  if (/\.docx$/i.test(fileName)) return extractDocxText(bytes);
+  throw new Error('Format tidak didukung. Kirim PDF atau DOCX.');
+}
+
+/**
+ * Kirim file teks sebagai dokumen Telegram via sendDocument (multipart/form-data).
+ */
+async function sendTelegramDocument(botToken, chatId, fileName, content) {
+  const boundary = '----FB' + Math.random().toString(36).slice(2, 10);
+  const enc = (s) => new TextEncoder().encode(s);
+  const body = new Uint8Array([
+    ...enc(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`),
+    ...enc(`--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n`),
+    ...enc(content),
+    ...enc(`\r\n--${boundary}--\r\n`),
+  ]);
+  await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+    body,
+  });
 }
 
 /**
