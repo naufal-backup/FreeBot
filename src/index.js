@@ -1366,8 +1366,9 @@ async function executeTool(toolCall, env, chatId, fromId) {
         const allowedExts = ['.md','.txt','.js','.py','.html','.css','.json','.yaml','.yml','.toml','.csv','.sh','.ts','.svg','.xml','.env','.ini'];
         const ext = '.' + fileName.split('.').pop().toLowerCase();
         if (!allowedExts.includes(ext)) return `Format ${ext} tidak didukung. Yang didukung: ${allowedExts.join(', ')}`;
-        await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, content);
-        return `File ${fileName} berhasil dibuat dan dikirim.`;
+        const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, content);
+        if (!result.ok) return `❌ Gagal mengirim file: ${result.error}`;
+        return `✅ File **${fileName}** berhasil dikirim. Silakan cek chat untuk mendownload.`;
       }
 
       case 'read_document': {
@@ -2071,22 +2072,29 @@ async function extractDocumentText(env, fileId, fileName) {
 }
 
 /**
- * Kirim file teks sebagai dokumen Telegram via sendDocument (multipart/form-data).
+ * Kirim file teks sebagai dokumen Telegram via sendDocument.
+ * Return {ok: true} jika sukses, {ok: false, error: ...} jika gagal.
  */
 async function sendTelegramDocument(botToken, chatId, fileName, content) {
-  const boundary = '----FB' + Math.random().toString(36).slice(2, 10);
-  const enc = (s) => new TextEncoder().encode(s);
-  const body = new Uint8Array([
-    ...enc(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`),
-    ...enc(`--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n`),
-    ...enc(content),
-    ...enc(`\r\n--${boundary}--\r\n`),
-  ]);
-  await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
-    method: 'POST',
-    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
-    body,
-  });
+  try {
+    const formData = new FormData();
+    formData.append('chat_id', String(chatId));
+    const blob = new Blob([content], { type: 'text/plain; charset=utf-8' });
+    formData.append('document', blob, fileName);
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      console.error('sendDocument failed:', JSON.stringify(errData));
+      return { ok: false, error: errData?.description || `HTTP ${res.status}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('sendDocument error:', err.message);
+    return { ok: false, error: err.message };
+  }
 }
 
 /**
