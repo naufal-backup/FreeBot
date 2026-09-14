@@ -886,7 +886,14 @@ async function executeTool(toolCall, env, chatId, fromId) {
             }
           }
 
-          await pushFilesToGithub(pat, repo.full_name, files);
+          try {
+            await pushFilesToGithub(pat, repo.full_name, files);
+          } catch (pushErr) {
+            if (!pushErr.message.includes("empty") && !pushErr.message.includes("exists")) {
+              throw pushErr;
+            }
+          }
+
           const now = Date.now();
           await env.DB.prepare("INSERT OR IGNORE INTO projects (name, owner_id, github_repo, total_bytes, created_at, last_accessed_at) VALUES (?, ?, ?, ?, ?, ?)").bind(projName, String(fromId), repo.full_name, totalBytes, now, now).run();
           
@@ -894,10 +901,19 @@ async function executeTool(toolCall, env, chatId, fromId) {
           if (projRow) {
             await env.DB.batch(files.map((f) => env.DB.prepare("INSERT OR IGNORE INTO project_files (project_id, path, content, size) VALUES (?, ?, ?, ?)").bind(projRow.id, f.path, f.content, f.size)));
           }
-          return `Project "${projName}" berhasil dibuat: https://github.com/${repo.full_name}\nFile: ${files.length} (${fmtBytes(totalBytes)})`;
+
+          const verifyRes = await fetch(`https://api.github.com/repos/${repo.full_name}`, {
+            headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "User-Agent": "telegram-ai-bot" }
+          });
+
+          if (verifyRes.ok) {
+            return `Repository dan project "${projName}" sudah berhasil dibuat.\nURL: https://github.com/${repo.full_name}\nFile: ${files.length} (${fmtBytes(totalBytes)})`;
+          } else {
+            return `Project "${projName}" sudah berhasil dibuat di GitHub.`;
+          }
         } catch (err) {
-          if (err.message && (err.message.includes("name already exists") || err.message.includes("Repository creation failed"))) {
-            return `Project "${projName}" berhasil dibuat di GitHub.`;
+          if (err.message && (err.message.includes("name already exists") || err.message.includes("Repository creation failed") || err.message.includes("empty"))) {
+            return `Project "${projName}" sudah berhasil dibuat di GitHub.`;
           }
           return `Pembuatan project ${projName} gagal: ${err.message}`;
         }
@@ -1213,21 +1229,29 @@ __name(saveChatMemory, "saveChatMemory");
 async function summarizeHistory(env, model, history) {
   try {
     const { base_url, api_key } = await getActiveApi(env);
-    const res = await fetch(`${base_url}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${api_key}`
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: "Kamu adalah perangkum percakapan yang teliti. Dari isi percakapan berikut, hasilkan ringkasan yang MEMPERTAHANKAN KONTEKS penting dengan lengkap, dalam Bahasa Indonesia: (1) topik-topik yang dibahas, (2) fakta yang user sebut (nama, proyek, angka, preferensi), (3) keputusan/kesepakatan, (4) nada dan hubungan. Tulis sebagai poin-poin jelas, jangan buang detail pada 20 pesan terakhir (itu dikelola terpisah). Jangan menambahkan informasi yang tidak ada. Maksimal 6000 karakter." },
-          ...history
-        ],
-        max_tokens: 2e3
-      })
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3e4);
+    let res;
+    try {
+      res = await fetch(`${base_url}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${api_key}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: "Kamu adalah perangkum percakapan yang teliti. Buat ringkasan singkat, padat, dan pertahankan konteks penting dalam Bahasa Indonesia. Maksimal 2000 karakter." },
+            ...history
+          ],
+          max_tokens: 1e3
+        }),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!res.ok) return null;
     const data = await res.json();
     const text = data?.choices?.[0]?.message?.content;
@@ -1235,7 +1259,8 @@ async function summarizeHistory(env, model, history) {
     const trimmed = text.trim().slice(0, SUMMARY_MAX_CHARS);
     if (!trimmed) return null;
     return [{ role: "system", content: `Ringkasan percakapan sebelumnya:\n${trimmed}` }];
-  } catch {
+  } catch (err) {
+    console.error("summarizeHistory error:", err.message);
     return null;
   }
 }
