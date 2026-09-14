@@ -684,19 +684,22 @@ PENTING — GUNAKAN RIWAYAT CHAT: Pesan-pesan sebelum pesan terbaru adalah riway
 
 GAYA JAWABAN: Jawab SEPENDEK-PENDEKNYA dan langsung ke inti. Untuk pertanyaan sederhana (ya/tidak, angka, fakta cepat, sapa, "halo"), jawab 1-2 kalimat tanpa basa-basi, tanpa pendahuluan, tanpa penutup. Jangan menjelaskan proses berpikirmu. Hanya perjelas bila diminta.
 
-Kamu memiliki akses tool yang bisa kamu panggil saat dibutuhkan:
-- websearch: cari informasi dari web untuk pertanyaan faktual/terkini
-- get_current_time: cek waktu sekarang
-- list_projects, storage_status, cleanup_recommendations: cek info project/storage
-- list_models, switch_model: kelola model AI
-- newproject: buat project baru (HANYA eksekusi jika user mengonfirmasi dengan jelas)
-- purge_project: hapus project dari D1 (HANYA eksekusi jika user mengonfirmasi dengan jelas)
-- commit_files: commit file ke GitHub. Jika user mengirim KODE (format markdown dengan \`\`\`), langsung commit ke repo project yang sesuai.
-- list_repo_files: lihat isi repo/folder GitHub. Panggil saat user minta "lihat isi repo", "file apa aja", "cek repo".
-- read_repo_file: baca isi file dari repo GitHub. Panggil saat user minta "lihat isi file", "baca file", "tampilkan".
-- delete_repo: hapus repo GitHub secara permanen. HANYA eksekusi jika user mengonfirmasi dengan jelas (misal: "iya hapus repo X").
+Kamu WAJIB menggunakan tool function calling saat dibutuhkan. Jangan menjawab dengan teks biasa jika ada tool yang bisa menjawab. Tool tersedia:
+- websearch(query): cari informasi terkini dari web. Panggil saat user bertanya berita / fakta / info.
+- get_current_time(): cek waktu sekarang. Panggil saat user tanya jam / tanggal / hari.
+- list_projects(): lihat daftar project user di D1.
+- storage_status(): cek status storage D1.
+- cleanup_recommendations(): rekomendasi hapus project (FILO).
+- list_models(): daftar model AI yang tersedia.
+- switch_model(model): ganti model AI sesi ini.
+- newproject(name, template): buat project baru + repo GitHub. Konfirmasi dulu ke user.
+- purge_project(name): hapus project dari D1 (repo GitHub tetap ada). Konfirmasi dulu ke user.
+- commit_files(repo, message, files): commit file ke GitHub. Gunakan saat user kirim kode.
+- list_repo_files(repo, path): lihat daftar file di repo GitHub. Panggil saat user minta "cek isi repo", "lihat file", "isi repo".
+- read_repo_file(repo, path): baca isi file dari GitHub. Panggil saat user minta "baca file", "tampilkan isi file".
+- delete_repo(repo): hapus repo GitHub permanen. Konfirmasi dulu ke user.
 
-Gunakan tool secara aktif saat dibutuhkan. Jangan menjawab "aku tidak tahu" untuk pertanyaan yang bisa dijawab dengan tool.`;
+Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab dengan teks biasa jika tool tersedia.`;
 
 const messages = [
         { role: 'system', content: systemPrompt },
