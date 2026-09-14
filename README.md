@@ -1,5 +1,11 @@
 # FreeBot
 
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Language](https://img.shields.io/badge/language-JavaScript-yellow.svg)
+![Platform](https://img.shields.io/badge/platform-Cloudflare%20Workers-orange.svg)
+![Runtime](https://img.shields.io/badge/runtime-ESM-purple.svg)
+![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
+
 Serverless AI Telegram Chatbot berjalan di **Cloudflare Workers** — tanpa server, tanpa database tradisional, tanpa biaya sewa VPS. Kode ES Module murni, hanya `fetch()` native, tanpa npm packages.
 
 Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kelola Supabase, websearch, dan kontrol akses hanya untuk ID Telegram yang diizinkan.
