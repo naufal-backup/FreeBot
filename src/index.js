@@ -18,6 +18,16 @@
  *     "aku adalah bot buatan Naufal Alamsyah menggunakan model {AI_MODEL}"
  */
 
+// Antrean per chat: serialisasi pemrosesan AI agar tidak bertumpuk.
+const chatQueues = new Map();
+
+function enqueueChatTask(chatId, task) {
+  const prev = chatQueues.get(chatId) || Promise.resolve();
+  const next = prev.then(task, task);
+  chatQueues.set(chatId, next.catch(() => {}));
+  return next;
+}
+
 export default {
   async fetch(request, env, ctx) {
     // Kunci endpoint: hanya Telegram webhook yang boleh masuk.
@@ -681,10 +691,14 @@ Kamu memiliki akses tool yang bisa kamu panggil saat dibutuhkan:
 - list_models, switch_model: kelola model AI
 - newproject: buat project baru (HANYA eksekusi jika user mengonfirmasi dengan jelas)
 - purge_project: hapus project dari D1 (HANYA eksekusi jika user mengonfirmasi dengan jelas)
+- commit_files: commit file ke GitHub. Jika user mengirim KODE (format markdown dengan \`\`\`), langsung commit ke repo project yang sesuai.
+- list_repo_files: lihat isi repo/folder GitHub. Panggil saat user minta "lihat isi repo", "file apa aja", "cek repo".
+- read_repo_file: baca isi file dari repo GitHub. Panggil saat user minta "lihat isi file", "baca file", "tampilkan".
+- delete_repo: hapus repo GitHub secara permanen. HANYA eksekusi jika user mengonfirmasi dengan jelas (misal: "iya hapus repo X").
 
 Gunakan tool secara aktif saat dibutuhkan. Jangan menjawab "aku tidak tahu" untuk pertanyaan yang bisa dijawab dengan tool.`;
 
-      const messages = [
+const messages = [
         { role: 'system', content: systemPrompt },
         ...history,
         { role: 'user', content: userText },
@@ -886,6 +900,76 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'commit_files',
+      description: 'Commit file ke repo GitHub yang sudah ada. HANYA eksekusi jika user mengonfirmasi dengan jelas atau mengirim kode yang mau di-commit.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Full name repo (owner/repo)' },
+          message: { type: 'string', description: 'Pesan commit' },
+          files: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Path file' },
+                content: { type: 'string', description: 'Isi file' },
+              },
+              required: ['path', 'content'],
+            },
+          },
+        },
+        required: ['repo', 'message', 'files'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_repo_files',
+      description: 'Lihat daftar file di repo GitHub. Hasilnya daftar path file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Full name repo (owner/repo)' },
+          path: { type: 'string', description: 'Path subfolder (kosong utk root)' },
+        },
+        required: ['repo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_repo_file',
+      description: 'Baca isi file dari repo GitHub.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Full name repo (owner/repo)' },
+          path: { type: 'string', description: 'Path file (src/index.js)' },
+        },
+        required: ['repo', 'path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_repo',
+      description: 'Hapus repo GitHub secara permanen. HANYA eksekusi jika user mengonfirmasi dengan jelas (misal: "iya, hapus repo X").',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Full name repo (owner/repo)' },
+        },
+        required: ['repo'],
+      },
+    },
+  },
 ];
 
 /**
@@ -998,6 +1082,87 @@ async function executeTool(toolCall, env, chatId, fromId) {
         if (!row) return `Project "${projName}" tidak ditemukan.`;
         await env.DB.batch([env.DB.prepare('DELETE FROM project_files WHERE project_id = ?').bind(row.id), env.DB.prepare('DELETE FROM projects WHERE id = ?').bind(row.id)]);
         return `Project "${projName}" dihapus dari D1. Repo GitHub tetap ada.`;
+      }
+
+      case 'commit_files': {
+        const repo = args.repo;
+        const message = args.message || 'Update via telegram-ai-bot';
+        const files = args.files;
+        if (!repo || !Array.isArray(files) || files.length === 0) return 'repo dan files (array) harus diisi.';
+        if (!env.DB) return 'D1 tidak tersedia.';
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung. Gunakan /login-gh dulu.';
+        const githubLogin = await validateGithubToken(pat);
+        if (!githubLogin) return 'Token GitHub tidak valid.';
+        await commitToRepo(pat, repo, message, files, 'main');
+        // Update project_files di D1 untuk repo yang sesuai
+        const proj = await env.DB.prepare('SELECT id FROM projects WHERE owner_id = ? AND github_repo = ?').bind(String(fromId), repo).first();
+        if (proj) {
+          for (const f of files) {
+            const sz = new TextEncoder().encode(f.content || '').length;
+            await env.DB.prepare('INSERT OR REPLACE INTO project_files (project_id, path, content, size) VALUES (?, ?, ?, ?)').bind(proj.id, f.path, f.content || '', sz).run();
+          }
+          const total = await getStorageUsage(env);
+          await env.DB.prepare('UPDATE projects SET total_bytes = (SELECT COALESCE(SUM(size),0) FROM project_files WHERE project_id=?), last_accessed_at = ? WHERE id = ?').bind(proj.id, Date.now(), proj.id).run();
+        }
+        return `Commit berhasil ke ${repo} (${files.length} file). Pesan: "${message}"`;
+      }
+
+      case 'list_repo_files': {
+        const repo = args.repo;
+        const folderPath = args.path || '';
+        if (!repo) return 'repo harus diisi.';
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung. Gunakan /login-gh dulu.';
+        const githubLogin = await validateGithubToken(pat);
+        if (!githubLogin) return 'Token GitHub tidak valid.';
+        const files = await listRepoContents(pat, repo, folderPath);
+        if (files === null) return `Gagal membaca repo ${repo}.`;
+        if (files.length === 0) return `Repo ${repo} kosong di path "${folderPath}".`;
+        return files.map((f) => `${f.type === 'dir' ? '[folder]' : '[file]'} ${f.path} (${f.size > 0 ? Math.round(f.size/1024)+'KB' : '0KB'})`).join('\n');
+      }
+
+      case 'read_repo_file': {
+        const repo = args.repo;
+        const filePath = args.path;
+        if (!repo || !filePath) return 'repo dan path harus diisi.';
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung. Gunakan /login-gh dulu.';
+        const githubLogin = await validateGithubToken(pat);
+        if (!githubLogin) return 'Token GitHub tidak valid.';
+        const content = await readRepoFile(pat, repo, filePath);
+        if (content === null) return `Gagal membaca file ${filePath} dari ${repo}.`;
+        return content;
+      }
+
+      case 'delete_repo': {
+        const repo = args.repo;
+        if (!repo || !repo.includes('/')) return 'repo harus format owner/repo (contoh: naufal-backup/naufal).';
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung. Gunakan /login-gh dulu.';
+        const githubLogin = await validateGithubToken(pat);
+        if (!githubLogin) return 'Token GitHub tidak valid.';
+        try {
+          const res = await fetch(`https://api.github.com/repos/${repo}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot' },
+          });
+          if (!res.ok && res.status !== 204) {
+            const errData = await res.json().catch(() => ({}));
+            return `Gagal hapus repo ${repo}: ${errData?.message || res.status}`;
+          }
+          // Juga hapus dari D1 jika ada
+          const proj = await env.DB.prepare('SELECT id FROM projects WHERE owner_id = ? AND github_repo = ?').bind(String(fromId), repo).first();
+          if (proj) {
+            await env.DB.batch([
+              env.DB.prepare('DELETE FROM project_files WHERE project_id = ?').bind(proj.id),
+              env.DB.prepare('DELETE FROM projects WHERE id = ?').bind(proj.id),
+            ]);
+          }
+          return `Repo ${repo} berhasil dihapus dari GitHub.`;
+        } catch (err) {
+          return `Error hapus repo: ${err.message}`;
+        }
       }
 
       default:
@@ -1472,6 +1637,117 @@ async function pushFilesToGithub(pat, fullName, files) {
     body: JSON.stringify({ ref: 'refs/heads/main', sha: commit.sha }),
   });
   return refRes.ok;
+}
+
+/**
+ * Commit file ke repo GitHub yang sudah ada (pakai Git Data API).
+ * Ambil head SHA dari branch, buat blobs → tree → commit → update ref.
+ */
+async function commitToRepo(pat, fullName, message, files, branch = 'main') {
+  const headers = {
+    Authorization: `Bearer ${pat}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'telegram-ai-bot',
+  };
+  const base = `https://api.github.com/repos/${fullName}`;
+
+  // 1. Dapatkan SHA commit terbaru di branch
+  const refRes = await fetch(`${base}/git/refs/heads/${branch}`, { headers });
+  const refData = await refRes.json();
+  if (!refRes.ok) throw new Error(refData?.message || 'gagal ambil branch ref');
+  const parentSha = refData?.object?.sha;
+  if (!parentSha) throw new Error('branch tidak punya commit');
+
+  // 2. Buat blobs untuk setiap file
+  const blobs = [];
+  for (const f of files) {
+    const r = await fetch(`${base}/git/blobs`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content: f.content, encoding: 'utf-8' }),
+    });
+    const b = await r.json();
+    if (!r.ok) throw new Error(b?.message || 'git blob error');
+    blobs.push({ path: f.path, mode: '100644', type: 'blob', sha: b.sha });
+  }
+
+  // 3. Buat tree baru dengan parent
+  const treeRes = await fetch(`${base}/git/trees`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ tree: blobs, base_tree: refData?.object?.tree_sha }), // gunakan tree asli untuk merge
+  });
+  const tree = await treeRes.json();
+  if (!treeRes.ok) throw new Error(tree?.message || 'git tree error');
+
+  // 4. Buat commit dengan parent
+  const commitRes = await fetch(`${base}/git/commits`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      message,
+      tree: tree.sha,
+      parents: [parentSha],
+    }),
+  });
+  const commit = await commitRes.json();
+  if (!commitRes.ok) throw new Error(commit?.message || 'git commit error');
+
+  // 5. Update ref branch ke commit baru
+  const updateRes = await fetch(`${base}/git/refs/heads/${branch}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ sha: commit.sha, force: false }),
+  });
+  if (!updateRes.ok) {
+    const errData = await updateRes.json().catch(() => ({}));
+    throw new Error(errData?.message || 'git update ref error');
+  }
+}
+
+/**
+ * Daftar isi folder/repo GitHub via REST API.
+ * Return array [{path, type, size}] atau null saat gagal.
+ */
+async function listRepoContents(pat, repo, folderPath) {
+  if (!folderPath) folderPath = '';
+  const url = folderPath
+    ? `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(folderPath)}`
+    : `https://api.github.com/repos/${repo}/contents`;
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!Array.isArray(data)) return null;
+    return data.map((f) => ({
+      path: f.path,
+      type: f.type || 'file',
+      size: f.size || 0,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Baca isi file dari GitHub repo (base64 decode).
+ * Return string content atau null saat gagal.
+ */
+async function readRepoFile(pat, repo, filePath) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(filePath)}`, {
+      headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.content) return null;
+    return atob(data.content.replace(/\s/g, ''));
+  } catch {
+    return null;
+  }
 }
 
 /**
