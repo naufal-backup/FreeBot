@@ -698,6 +698,10 @@ Kamu WAJIB menggunakan tool function calling saat dibutuhkan. Jangan menjawab de
 - list_repo_files(repo, path): lihat daftar file di repo GitHub. Panggil saat user minta "cek isi repo", "lihat file", "isi repo".
 - read_repo_file(repo, path): baca isi file dari GitHub. Panggil saat user minta "baca file", "tampilkan isi file".
 - delete_repo(repo): hapus repo GitHub permanen. Konfirmasi dulu ke user.
+- list_github_repos(): lihat semua repo GitHub milikmu.
+- change_repo_visibility(repo, private): ubah visibilitas repo (public/private). Konfirmasi dulu.
+- create_repo_branch(repo, branch): buat branch baru dari main/sumber lain.
+- delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi dulu.
 
 Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab dengan teks biasa jika tool tersedia.`;
 
@@ -973,6 +977,61 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'change_repo_visibility',
+      description: 'Ubah visibilitas repo GitHub (public/private). HANYA eksekusi jika user mengonfirmasi dengan jelas.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Full name repo (owner/repo)' },
+          private: { type: 'boolean', description: 'true=private, false=public' },
+        },
+        required: ['repo', 'private'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_github_repos',
+      description: 'Lihat semua repo GitHub milik user.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_repo_branch',
+      description: 'Buat branch baru di repo GitHub.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Full name repo (owner/repo)' },
+          branch: { type: 'string', description: 'Nama branch baru' },
+          from_branch: { type: 'string', description: 'Branch sumber (default: main)' },
+        },
+        required: ['repo', 'branch'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_repo_file',
+      description: 'Hapus file dari repo GitHub (dengan commit). HANYA eksekusi jika user mengonfirmasi.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Full name repo (owner/repo)' },
+          path: { type: 'string', description: 'Path file yang akan dihapus' },
+          message: { type: 'string', description: 'Pesan commit' },
+        },
+        required: ['repo', 'path'],
+      },
+    },
+  },
 ];
 
 /**
@@ -1165,6 +1224,107 @@ async function executeTool(toolCall, env, chatId, fromId) {
           return `Repo ${repo} berhasil dihapus dari GitHub.`;
         } catch (err) {
           return `Error hapus repo: ${err.message}`;
+        }
+      }
+
+      case 'change_repo_visibility': {
+        const repo = args.repo;
+        const isPrivate = args.private !== false;
+        if (!repo) return 'repo harus diisi.';
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung. Gunakan /login-gh dulu.';
+        try {
+          const res = await fetch(`https://api.github.com/repos/${repo}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ private: isPrivate }),
+          });
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            return `Gagal ubah visibilitas: ${errData?.message || res.status}`;
+          }
+          return `Repo ${repo} sekarang ${isPrivate ? 'private' : 'public'}.`;
+        } catch (err) {
+          return `Error ubah visibilitas: ${err.message}`;
+        }
+      }
+
+      case 'list_github_repos': {
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung.';
+        try {
+          const res = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
+            headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot' },
+          });
+          if (!res.ok) return `HTTP ${res.status}`;
+          const repos = await res.json();
+          return repos.map((r) => `${r.private ? '🔒' : '🌐'} ${r.full_name}`).join('\n');
+        } catch (err) {
+          return `Error: ${err.message}`;
+        }
+      }
+
+      case 'create_repo_branch': {
+        const repo = args.repo;
+        const newBranch = args.branch;
+        const fromBranch = args.from_branch || 'main';
+        if (!repo || !newBranch) return 'repo dan branch harus diisi.';
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung.';
+        try {
+          // Ambil SHA dari branch sumber
+          const refRes = await fetch(`https://api.github.com/repos/${repo}/git/refs/heads/${fromBranch}`, {
+            headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot' },
+          });
+          if (!refRes.ok) return `Branch "${fromBranch}" tidak ditemukan.`;
+          const refData = await refRes.json();
+          const sha = refData?.object?.sha;
+          if (!sha) return 'Tidak dapat membaca SHA branch sumber.';
+          // Buat branch baru
+          const createRes = await fetch(`https://api.github.com/repos/${repo}/git/refs`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ref: `refs/heads/${newBranch}`, sha }),
+          });
+          if (!createRes.ok) {
+            const errData = await createRes.json().catch(() => ({}));
+            return `Gagal buat branch: ${errData?.message || createRes.status}`;
+          }
+          return `Branch ${newBranch} berhasil dibuat di ${repo} (dari ${fromBranch}).`;
+        } catch (err) {
+          return `Error: ${err.message}`;
+        }
+      }
+
+      case 'delete_repo_file': {
+        const repo = args.repo;
+        const filePath = args.path;
+        const msg = args.message || `Delete ${filePath} via telegram-ai-bot`;
+        if (!repo || !filePath) return 'repo dan path harus diisi.';
+        const pat = await getServiceToken(env, fromId, 'github');
+        if (!pat) return 'GitHub belum tersambung.';
+        try {
+          // Dapatkan SHA file
+          const fileRes = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(filePath)}`, {
+            headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot' },
+          });
+          if (!fileRes.ok) return `File tidak ditemukan: HTTP ${fileRes.status}`;
+          const fileData = await fileRes.json();
+          const sha = fileData?.sha;
+          if (!sha) return 'Tidak dapat membaca SHA file.';
+          // Hapus file via commit
+          const delRes = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(filePath)}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'User-Agent': 'telegram-ai-bot', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg, sha }),
+          });
+          if (!delRes.ok) {
+            const errData = await delRes.json().catch(() => ({}));
+            return `Gagal hapus file: ${errData?.message || delRes.status}`;
+          }
+          return `File ${filePath} dihapus dari ${repo}.`;
+        } catch (err) {
+          return `Error: ${err.message}`;
         }
       }
 
