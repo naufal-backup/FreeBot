@@ -100,7 +100,7 @@ EOF
 ok "D1 binding ditambahkan ke wrangler.toml"
 
 # --- Migrations ---
-for f in migrations/0001_init.sql migrations/0002_chat_memory.sql migrations/0003_api_config.sql; do
+for f in migrations/0001_init.sql migrations/0002_chat_memory.sql migrations/0003_api_config.sql migrations/0004_processed_updates.sql; do
   npx wrangler d1 execute telegram-projects --remote --file="$f" >/dev/null 2>&1 && ok "Migrasi $f OK" || warn "Migrasi $f gagal"
 done
 
