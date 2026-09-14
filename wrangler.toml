@@ -1,18 +1,12 @@
-# FreeBot — Cloudflare Workers + D1 + Telegram Bot
-# Setup script akan mengisi database_id yang benar secara otomatis.
-
 name = "freebot"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
 
+[[d1_databases]]
+binding = "DB"
+database_name = "telegram-projects"
+database_id = "YOUR_D1_DATABASE_ID_HERE"
+
 [vars]
-STORAGE_QUOTA_BYTES = "419430400"
-
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "telegram-projects"
-# database_id = "<akan diisi setup.sh>"
-
-# [[services]]
-# audio_transcribe = { binding = "AUDIO_TRANSCRIBE", service = "audio-transcribe" }
+STORAGE_QUOTA_BYTES = 419430400 # 400MB
