@@ -8,7 +8,7 @@
 
 Serverless AI Telegram Chatbot berjalan di **Cloudflare Workers** — tanpa server, tanpa database tradisional, tanpa biaya sewa VPS. Kode ES Module murni, hanya `fetch()` native, tanpa npm packages.
 
-Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kelola Supabase, websearch, dan kontrol akses hanya untuk ID Telegram yang diizinkan.
+Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kelola Supabase, websearch, transkripsi voice note, dan kontrol akses hanya untuk ID Telegram yang diizinkan.
 
 ## Fitur
 
@@ -21,6 +21,7 @@ Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kel
 - **Supabase on-demand** — `/need-supabase`
 - **Websearch** — AI bisa cari info dari web saat dibutuhkan
 - **Tool Calling** — AI punya akses eksekusi skill (project, storage, model, waktu, websearch)
+- **Transkripsi Voice Note** — kirim VN, bot transkrip pakai Whisper via Workers AI (gratis, ~214 menit/hari). File audio tidak disimpan permanen.
 - **Identitas tetap** — jawaban "siapa kamu?" deterministik, tidak bisa dimanipulasi
 - **Akses terkunci** — hanya `ALLOWED_USER_IDS` yang boleh pakai
 - **Endpoint privat** — webhook divalidasi `secret_token`

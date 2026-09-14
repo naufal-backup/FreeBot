@@ -40,10 +40,26 @@ export default {
 
     // 2. Guard: ignore non-text updates (sticker, photo, edited_message, etc.)
     const chatId = update?.message?.chat?.id;
-    const userText = update?.message?.text;
+    const voiceInfo = update?.message?.voice;
+    let userText = update?.message?.text;
     const fromId = update?.message?.from?.id;
     const messageId = update?.message?.message_id;
-    if (!chatId || typeof userText !== 'string' || !fromId) {
+    if (!chatId || !fromId) {
+      return new Response('OK', { status: 200 });
+    }
+
+    // 2a. Voice note: transkripsi dulu jadi teks (tanpa simpan file permanen).
+    if (!userText && voiceInfo) {
+      const transcribed = await transcribeVoiceNote(env, voiceInfo, chatId);
+      if (transcribed === null) {
+        return new Response('OK', { status: 200 });
+      }
+      userText = transcribed;
+      if (!userText) {
+        return new Response('OK', { status: 200 });
+      }
+    } else if (!userText) {
+      // Sticker/foto/dll → abaikan, jangan retry
       return new Response('OK', { status: 200 });
     }
 
@@ -1479,6 +1495,105 @@ async function listSupabaseProjects(pat) {
 }
 
 /**
+ * Transkripsi voice note via audio worker (service binding atau HTTP fallback).
+ * Return teks transkrip, atau null jika gagal/ditolak (jangan retry).
+ * File audio TIDAK pernah disimpan permanen — dipegang byte array sementara saja.
+ */
+async function transcribeVoiceNote(env, voiceInfo, chatId) {
+  try {
+    // Limiter: durasi & ukuran
+    if (voiceInfo.duration > 60) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Voice terlalu panjang (maks 60 detik).');
+      return null;
+    }
+    if (voiceInfo.file_size > 20 * 1024 * 1024) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Voice terlalu besar (maks 20MB).');
+      return null;
+    }
+    if (!env.AUDIO_TRANSCRIBE && (!env.AUDIO_URL || !env.AUDIO_SECRET)) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Audio transcriber belum dikonfigurasi.');
+      return null;
+    }
+
+    await sendChatAction(env.TELEGRAM_TOKEN, chatId);
+
+    // 1. getFile → file_path
+    const fileRes = await fetch(
+      `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/getFile`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: voiceInfo.file_id }),
+      }
+    );
+    const fileData = await fileRes.json();
+    const filePath = fileData?.result?.file_path;
+    if (!filePath) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Gagal mengambil file voice.');
+      return null;
+    }
+
+    // 2. download audio dari Telegram (hanya di RAM sementara)
+    const audioRes = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_TOKEN}/${filePath}`);
+    if (!audioRes.ok) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Gagal mengunduh voice.');
+      return null;
+    }
+    const audioBuf = await audioRes.arrayBuffer();
+    const contentType = audioRes.headers.get('content-type') || 'audio/ogg';
+
+    // 3. panggil audio transcriber
+    let transcribeRes;
+    const audioHeaders = {
+      'Content-Type': 'application/json',
+      ...(env.AUDIO_SECRET ? { 'X-Audio-Secret': env.AUDIO_SECRET } : {}),
+    };
+    if (env.AUDIO_TRANSCRIBE) {
+      // Service binding — privat, cepat
+      transcribeRes = await env.AUDIO_TRANSCRIBE.fetch('https://audio-transcribe/transcribe', {
+        method: 'POST',
+        headers: audioHeaders,
+        body: JSON.stringify({ audio: arrayBufferToBase64(audioBuf), contentType }),
+      });
+    } else {
+      // Fallback HTTP publik
+      transcribeRes = await fetch(`${env.AUDIO_URL}/transcribe`, {
+        method: 'POST',
+        headers: audioHeaders,
+        body: JSON.stringify({ audio: arrayBufferToBase64(audioBuf), contentType }),
+      });
+    }
+
+    const transcribeData = await transcribeRes.json();
+    if (!transcribeRes.ok || !transcribeData?.text) {
+      console.error('Transcribe error:', JSON.stringify(transcribeData).slice(0, 300));
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Gagal mentranskripsi voice.');
+      return null;
+    }
+
+    return String(transcribeData.text).trim();
+  } catch (err) {
+    console.error('transcribeVoiceNote error:', err.message);
+    try {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Terjadi error saat proses voice.');
+    } catch {}
+    return null;
+  }
+}
+
+/**
+ * Konversi ArrayBuffer → base64 (untuk payload audio worker).
+ */
+function arrayBufferToBase64(buf) {
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
  * Loop typing: kirim sendChatAction 'typing' tiap 4 detik sampai bot selesai
  * menjawab, atau mencapai batas aman 15 detik.
  * Dipanggil via ctx.waitUntil agar tidak menambah latensi handler utama.
@@ -1526,7 +1641,10 @@ async function deleteTelegramMessage(botToken, chat_id, message_id) {
 
 /**
  * Konversi Markdown dasar ke HTML untuk Telegram parse_mode.
- * Urutan: escape HTML → code blocks → inline code → bold → strikethrough → italic → links.
+ * Urutan: escape HTML → lindungi code → tabel → header → inline code → bold → strikethrough → italic → links.
+ *
+ * - Header "## teks" / "# teks" → <b>teks</b> (Telegram tidak punya tag heading; tebal sebagai pengganti)
+ * - Tabel pipe Markdown → rata-tengah monospace dalam <pre><code> agar kolom sejajar di Telegram
  */
 function markdownToHtml(text) {
   if (!text) return '';
@@ -1535,26 +1653,107 @@ function markdownToHtml(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  // Code blocks (```...```)
-  s = s.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-  s = s.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  const protectedBlocks = [];
 
-  // Inline code (`...`)
-  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // 1. Lindungi fenced code blocks (```...```) dari processing lain
+  s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
+    protectedBlocks.push(`<pre><code>${code}</code></pre>`);
+    return `\u0000BLOCK${protectedBlocks.length - 1}\u0000`;
+  });
+  s = s.replace(/```([\s\S]*?)```/g, (m, code) => {
+    protectedBlocks.push(`<pre><code>${code}</code></pre>`);
+    return `\u0000BLOCK${protectedBlocks.length - 1}\u0000`;
+  });
 
-  // Bold (**...**)
+  // 2. Lindungi inline code (`...`)
+  s = s.replace(/`([^`]+)`/g, (m, code) => {
+    protectedBlocks.push(`<code>${code}</code>`);
+    return `\u0000BLOCK${protectedBlocks.length - 1}\u0000`;
+  });
+
+  // 3. Tabel pipe Markdown → monospace rata kolom
+  s = convertMarkdownTables(s);
+
+  // 4. Header "# teks" / "## teks" / "### teks" → bold
+  s = s.replace(/^#{1,4}\s+(.+)$/gm, '<b>$1</b>');
+  s = s.replace(/^#{1,4}([^#\s].*)$/gm, '<b>$1</b>');
+
+  // 5. Bold (**...**)
   s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
 
-  // Strikethrough (~~...~~)
+  // 6. Strikethrough (~~...~~)
   s = s.replace(/~~(.+?)~~/g, '<s>$1</s>');
 
-  // Italic (*...*) — setelah bold agar tidak konflik
+  // 7. Italic (*...*) — setelah bold agar tidak konflik
   s = s.replace(/\*([^*]+)\*/g, '<i>$1</i>');
 
-  // Links [teks](url)
+  // 8. Links [teks](url)
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
+  // 9. Pulihkan blok yang dilindungi
+  s = s.replace(/\u0000BLOCK(\d+)\u0000/g, (m, i) => protectedBlocks[Number(i)] || m);
+
   return s;
+}
+
+/**
+ * Deteksi blok tabel pipe Markdown dan ubah jadi monospace rata kolom.
+ * Contoh input:
+ *   | A | B |
+ *   |---|---|
+ *   | 1 | 2 |
+ * Output: <pre><code>A | B\n1 | 2</code></pre> (kolom disejajarkan)
+ */
+function convertMarkdownTables(s) {
+  const lines = s.split('\n');
+  const out = [];
+  let i = 0;
+
+  const isSepRow = (line) => /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(line);
+  const isTableRow = (line) => /^\s*\|.*\|\s*$/.test(line.trim()) || line.trim().startsWith('|');
+
+  while (i < lines.length) {
+    const line = lines[i];
+    // Mulai tabel: baris pipe + baris berikutnya separator
+    if (isTableRow(line) && i + 1 < lines.length && isSepRow(lines[i + 1])) {
+      const rows = [splitPipeRow(line)];
+      i++; // separator
+      i++;
+      while (i < lines.length && isTableRow(lines[i])) {
+        rows.push(splitPipeRow(lines[i]));
+        i++;
+      }
+      out.push(formatTableMonospace(rows));
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+  return out.join('\n');
+}
+
+function splitPipeRow(line) {
+  let l = line.trim();
+  l = l.replace(/^\|/, '').replace(/\|$/, '');
+  return l.split('|').map((c) => c.trim());
+}
+
+function formatTableMonospace(rows) {
+  const colCount = Math.max(...rows.map((r) => r.length));
+  const widths = [];
+  for (let c = 0; c < colCount; c++) {
+    widths.push(Math.max(...rows.map((r) => (r[c] || '').length)));
+  }
+  // Baris header pertama sebagai judul (tebal)
+  const header = rows[0];
+  const body = rows.slice(1);
+  const fmt = (cells) =>
+    cells.map((cell, c) => String(cell || '').padEnd(widths[c], ' ')).join(' | ').replace(/\s+$/, '');
+
+  const lines = [];
+  lines.push(fmt(header.map((c, idx) => `**${c}**`))); // header bold (ditangani pass bold)
+  for (const r of body) lines.push(fmt(r));
+  return `<pre><code>${lines.join('\n')}</code></pre>`;
 }
 
 /**
