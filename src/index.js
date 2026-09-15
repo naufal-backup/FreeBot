@@ -28,7 +28,94 @@ function enqueueChatTask(chatId, task) {
   return next;
 }
 
+
+/**
+ * Parse waktu natural language ke epoch ms (detik Unix).
+ * Contoh: "in 45 minutes", "besok jam 8 pagi", "next tuesday at 3 pm"
+ */
+function parseNaturalTime(text) {
+  const norm = (text || '').toLowerCase().trim();
+  const now = Date.now();
+  const wibOff = 7 * 3600000;
+  const wibNow = new Date(now + wibOff);
+  let target = new Date(wibNow);
+
+  const rel = norm.match(/(?:dalam|in|after)\s+(\d+)\s*(menit|minute|min|m|jam|hour|h|hari|day|d)\b/);
+  if (rel) {
+    const n = parseInt(rel[1], 10);
+    const u = rel[2];
+    const ms = (u.startsWith('menit') || u.startsWith('min') || u === 'm') ? 60000 :
+              (u.startsWith('jam') || u.startsWith('hour') || u === 'h') ? 3600000 : 86400000;
+    return now + n * ms;
+  }
+  if (/besok|tomorrow/.test(norm)) target.setUTCDate(target.getUTCDate() + 1);
+  if (/lusa|day after/.test(norm)) target.setUTCDate(target.getUTCDate() + 2);
+  const days = { minggu:0, ahad:0, senin:1, selasa:2, rabu:3, kamis:4, jumat:5, sabtu:6 };
+  const dm = norm.match(/(?:next |)(senin|selasa|rabu|kamis|jumat|sabtu|ahad|minggu)/);
+  if (dm) {
+    let diff = (days[dm[1]] - target.getUTCDay() + 7) % 7;
+    if (diff === 0) diff = 7;
+    target.setUTCDate(target.getUTCDate() + diff);
+  }
+  const hm = norm.match(/(\d{1,2})[:.](\d{2})/);
+  if (hm) {
+    target.setUTCHours(parseInt(hm[1],10), parseInt(hm[2],10), 0, 0);
+  } else {
+    const hx = norm.match(/(?:jam |pukul |at |)(\d{1,2})\s*(pagi|siang|sore|malam|am|pm)?\b/);
+    if (hx) {
+      let h = parseInt(hx[1], 10);
+      const sfx = hx[2] || '';
+      if ((sfx === 'siang' || sfx === 'sore' || sfx === 'malam' || sfx === 'pm') && h < 12) h += 12;
+      if ((sfx === 'pagi' || sfx === 'am') && h === 12) h = 0;
+      target.setUTCHours(h, 0, 0, 0);
+    } else return null;
+  }
+  if (target.getTime() <= wibNow.getTime()) target.setUTCDate(target.getUTCDate() + 1);
+  return target.getTime() - wibOff;
+}
+
+/**
+ * Eksekusi cron tasks dan reminder yang jatuh tempo. Panggil dari scheduled().
+ */
+async function runScheduledTasks(env, ctx) {
+  if (!env.DB) return;
+  const now = Date.now();
+  const wib = new Date(now + 7 * 3600000);
+  const hhmm = String(wib.getUTCHours()).padStart(2,'0') + ':' + String(wib.getUTCMinutes()).padStart(2,'0');
+  const today = wib.toISOString().slice(0,10);
+  try {
+    const tasks = await env.DB.prepare('SELECT id,chat_id,task_text FROM tasks WHERE active=1 AND cron_time=?').bind(hhmm).all();
+    for (const t of (tasks.results || [])) {
+      const r = await env.DB.prepare('SELECT last_run FROM tasks WHERE id=?').bind(t.id).first();
+      if (r?.last_run && r.last_run.slice(0,10) === today) continue;
+      try {
+        const { base_url, api_key } = await getActiveApi(env, null);
+        const m = env.AI_MODEL || 'deepseek-v4-flash';
+        const ai = await fetch(base_url + '/chat/completions', {
+          method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+api_key},
+          body: JSON.stringify({model:m,messages:[{role:'system',content:'Jawab singkat.'},{role:'user',content:t.task_text}],max_tokens:500}),
+        });
+        const d = await ai.json();
+        const reply = (d?.choices?.[0]?.message?.content || '').trim().slice(0,1000);
+        await sendTelegram(env.TELEGRAM_TOKEN, t.chat_id, reply);
+        await env.DB.prepare('UPDATE tasks SET last_run=? WHERE id=?').bind(new Date().toISOString(), t.id).run();
+      } catch(e) { console.error('cron:', e.message); }
+    }
+  } catch(e) { console.error('cron q:', e.message); }
+  try {
+    const rems = await env.DB.prepare('SELECT id,chat_id,message FROM pending_reminders WHERE done=0 AND remind_at<='+now).all();
+    for (const r of (rems.results || [])) {
+      await sendTelegram(env.TELEGRAM_TOKEN, r.chat_id, 'Pengingat: ' + r.message);
+      await env.DB.prepare('UPDATE pending_reminders SET done=1 WHERE id=?').bind(r.id).run();
+    }
+  } catch(e) { console.error('rem:', e.message); }
+}
+
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runScheduledTasks(env, ctx));
+  },
+
   async fetch(request, env, ctx) {
     // Kunci endpoint: hanya Telegram webhook yang boleh masuk.
     // Wajib POST + header X-Telegram-Bot-Api-Secret-Token cocok dengan WEBHOOK_SECRET.
@@ -581,6 +668,40 @@ chatId,
     }
 
     // --- Supabase: /need-supabase <nama> (create project via Management API) ---
+
+    if (cmdWord === '/cron') {
+      const m = cmdArg.match(/^(\d{1,2}[:.]\d{2})\s+(.+)$/);
+      if (!m) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Format: /cron HH:MM tugas\nContoh: /cron 09:00 ringkasan berita AI');
+        return new Response('OK', { status: 200 });
+      }
+      if (!env.DB) { await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 tidak tersedia.'); return new Response('OK', { status: 200 }); }
+      const cronTime = m[1].replace('.', ':');
+      await env.DB.prepare('INSERT INTO tasks (owner_id,chat_id,type,cron_time,task_text,active,created_at) VALUES (?,?,?,?,?,1,?)')
+        .bind(String(fromId), String(chatId), 'cron', cronTime, m[2], Date.now()).run();
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Cron dijadwalkan tiap **' + cronTime + '** WIB: ' + m[2]);
+      return new Response('OK', { status: 200 });
+    }
+
+    if (cmdWord === '/remind') {
+      const m = cmdArg.match(/^(.+?)\s+(.+)$/);
+      if (!m) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Format: /remind <waktu> <pesan>\nContoh: /remind in 45 minutes meeting');
+        return new Response('OK', { status: 200 });
+      }
+      if (!env.DB) { await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 tidak tersedia.'); return new Response('OK', { status: 200 }); }
+      const remindAt = parseNaturalTime(m[1]);
+      if (!remindAt) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Waktu tidak dikenali. Contoh: "in 45 minutes", "besok jam 8 pagi"');
+        return new Response('OK', { status: 200 });
+      }
+      await env.DB.prepare('INSERT INTO pending_reminders (owner_id,chat_id,remind_at,message,created_at) VALUES (?,?,?,?,?)')
+        .bind(String(fromId), String(chatId), remindAt, m[2], Date.now()).run();
+      const wib = new Date(remindAt + 7 * 3600000);
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Pengingat: ' + wib.toISOString().replace('T',' ').slice(0,16) + ' WIB — ' + m[2]);
+      return new Response('OK', { status: 200 });
+    }
+
     if (cmdWord === '/need-supabase') {
       const projName = (cmdArg.split(/\s+/)[0] || '').toLowerCase();
       if (!/^[a-z][a-z0-9-]{2,23}$/.test(projName)) {
@@ -1050,6 +1171,20 @@ const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'webfetch',
+      description: 'Ambil isi URL website dan kembalikan sebagai teks. Panggil saat user minta "buka link", "cek website", "ambil halaman".',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL lengkap yang ingin dibuka' },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'read_document',
       description: 'Baca isi dokumen PDF atau DOCX yang dikirim user. Gunakan saat user upload dokumen dan minta dibaca/dianalisis.',
       parameters: {
@@ -1371,6 +1506,23 @@ async function executeTool(toolCall, env, chatId, fromId) {
         return `✅ File **${fileName}** berhasil dikirim. Silakan cek chat untuk mendownload.`;
       }
 
+      case 'webfetch': {
+        const url = args.url || '';
+        if (!/^https?:\/\//.test(url)) return 'URL harus diawali http:// atau https://';
+        try {
+          const res = await fetch(url, { headers: { 'User-Agent': 'telegram-ai-bot/1.0' } });
+          if (!res.ok) return 'HTTP ' + res.status;
+          const ct = res.headers.get('content-type') || '';
+          let body = await res.text();
+          if (ct.includes('text/html')) {
+            body = body.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '');
+            body = body.replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ');
+          }
+          return body.trim().slice(0, 8000) || '(Halaman kosong.)';
+        } catch (err) {
+          return 'Gagal: ' + err.message;
+        }
+      }
       case 'read_document': {
         const fileId = args.file_id;
         const fileName = args.file_name || 'dokumen';
