@@ -127,6 +127,7 @@ async function handleRequest(request, env, ctx) {
     }
     const chatId = update?.message?.chat?.id;
     const voiceInfo = update?.message?.voice;
+    const documentInfo = update?.message?.document;
     let userText = update?.message?.text;
     const fromId = update?.message?.from?.id;
     const messageId = update?.message?.message_id;
@@ -140,6 +141,40 @@ async function handleRequest(request, env, ctx) {
       }
       userText = transcribed;
       if (!userText) {
+        return new Response("OK", { status: 200 });
+      }
+    } else if (!userText && documentInfo) {
+      // FIX: document messages were previously ignored entirely, because
+      // this branch didn't exist -- the code fell through to `else if
+      // (!userText) return new Response("OK")` below and dropped the
+      // update. Telegram documents (PDF/DOCX) never reached the AI at all.
+      // Now we extract the text right away and feed it into the normal
+      // chat flow as if the user had typed it, using the existing
+      // extractDocumentText() helper directly on incoming document
+      // messages, instead of leaving it unused / only reachable via a
+      // now-removed on-demand tool.
+      const fileName = documentInfo.file_name || "dokumen";
+      if (!/\.(pdf|docx)$/i.test(fileName)) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format dokumen tidak didukung. Kirim PDF atau DOCX.");
+        return new Response("OK", { status: 200 });
+      }
+      if ((documentInfo.file_size || 0) > 20 * 1024 * 1024) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Dokumen terlalu besar (maks 20MB).");
+        return new Response("OK", { status: 200 });
+      }
+      await sendChatAction(env.TELEGRAM_TOKEN, chatId);
+      try {
+        const extracted = await extractDocumentText(env, documentInfo.file_id, fileName);
+        if (!extracted || !extracted.trim()) {
+          await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Tidak dapat mengekstrak teks dari dokumen.");
+          return new Response("OK", { status: 200 });
+        }
+        const caption = (update?.message?.caption || "").trim();
+        userText = `${caption ? caption + "\n\n" : ""}[Dokumen terlampir: ${fileName}]
+
+${extracted.trim().slice(0, 15e3)}`;
+      } catch (err) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Gagal membaca dokumen: ${err.message}`);
         return new Response("OK", { status: 200 });
       }
     } else if (!userText) {
@@ -174,7 +209,7 @@ async function handleRequest(request, env, ctx) {
       await sendTelegram(
         env.TELEGRAM_TOKEN,
         chatId,
-        "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model sesi\n/models - daftar model\n/reset - hapus memori chat sesi\n/myid - lihat Telegram ID kamu\n/newproject <nama> [template] - buat project (worker-hello|worker-api|ai-chat) + repo GitHub\n/projects - list project\n/storage - status D1\n/cleanup - rekomendasi hapus (FILO)\n/purge <nama> yes - hapus dari D1\n/need-supabase <nama> - buat project Supabase\n/login-gh /token-gh <pat> /gh-status /logout-gh - kelola GitHub\n/login-sb /token-sb <pat> /sb-status /logout-sb - kelola Supabase\n/changeapi <url> <key> - ganti API sekaligus (provider + key)\n/changeprovider <url> - ganti provider, key tetap\n/changekey <key> - ganti key, provider tetap\n/api-status - lihat API aktif\n/resetapi - kembali ke default\n\nKetik teks bebas untuk chat AI."
+        "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model sesi\n/models - daftar model\n/reset - hapus memori chat sesi\n/myid - lihat Telegram ID kamu\n/newproject <nama> [template] - buat project (worker-hello|worker-api|ai-chat) + repo GitHub\n/projects - list project\n/storage - status D1\n/cleanup - rekomendasi hapus (FILO)\n/purge <nama> yes - hapus dari D1\n/need-supabase <nama> - buat project Supabase\n/login-gh /token-gh <pat> /gh-status /logout-gh - kelola GitHub\n/login-sb /token-sb <pat> /sb-status /logout-sb - kelola Supabase\n/changeapi <url> <key> - ganti API sekaligus (provider + key)\n/changeprovider <url> - ganti provider, key tetap\n/changekey <key> - ganti key, provider tetap\n/api-status - lihat API aktif\n/resetapi - kembali ke default\n\nKetik teks bebas untuk chat AI.\n\nKirim file PDF/DOCX untuk saya baca dan analisis langsung."
       );
       return new Response("OK", { status: 200 });
     }
@@ -805,6 +840,8 @@ Kamu WAJIB menggunakan tool function calling saat dibutuhkan. Jangan menjawab de
 - create_repo_branch(repo, branch): buat branch baru dari main/sumber lain.
 - delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi dulu.
 
+Catatan dokumen: jika pesan user mengandung blok "[Dokumen terlampir: nama_file]" diikuti isi teksnya, itu ARTINYA dokumen tersebut SUDAH dibaca dan teksnya sudah tersedia langsung di pesan ini. Jangan minta user upload ulang atau bilang tidak bisa baca file \u2014 langsung gunakan isi teks yang sudah ada untuk menjawab.
+
 Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab dengan teks biasa jika tool tersedia.`;
       const messages = [
         { role: "system", content: systemPrompt },
@@ -906,7 +943,7 @@ var TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "websearch",
-      description: "Cari informasi dari web. Gunakan untuk pertanyaan yang membutuhkan informasi terkini, berita, atau fakta dari internet.",
+      description: "Cari informasi dari web. Gunakan untuk pertanyaan yang membutuhkan informasi terkini, berita, atau fakta dari internet. Jika user meminta jurnal, artikel ilmiah, paper, riset, atau referensi akademik, tool ini otomatis menyertakan hasil dari ResearchGate di samping hasil web umum.",
       parameters: {
         type: "object",
         properties: {
@@ -1206,21 +1243,6 @@ var TOOL_DEFINITIONS = [
           url: { type: "string", description: "URL lengkap yang ingin dibuka" }
         },
         required: ["url"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "read_document",
-      description: "Baca isi dokumen PDF atau DOCX yang dikirim user. Gunakan saat user upload dokumen dan minta dibaca/dianalisis.",
-      parameters: {
-        type: "object",
-        properties: {
-          file_id: { type: "string", description: "file_id dari dokumen Telegram" },
-          file_name: { type: "string", description: "Nama file (contoh: laporan.pdf)" }
-        },
-        required: ["file_id", "file_name"]
       }
     }
   }
@@ -1551,20 +1573,6 @@ File: ${files.length} (${fmtBytes(totalBytes)})`;
           return "Gagal: " + err.message;
         }
       }
-      case "read_document": {
-        const fileId = args.file_id;
-        const fileName = args.file_name || "dokumen";
-        if (!fileId) return "file_id diperlukan.";
-        try {
-          const text = await extractDocumentText(env, fileId, fileName);
-          if (!text || !text.trim()) return "Tidak dapat mengekstrak teks dari dokumen.";
-          return `**${fileName}:**
-
-${text.trim().slice(0, 15e3)}`;
-        } catch (err) {
-          return `Gagal membaca dokumen: ${err.message}`;
-        }
-      }
       default:
         return `Tool "${name}" tidak dikenal.`;
     }
@@ -1574,14 +1582,190 @@ ${text.trim().slice(0, 15e3)}`;
   }
 }
 __name(executeTool, "executeTool");
+
+// ---------------------------------------------------------------------
+// WEBSEARCH — FIXED
+// ---------------------------------------------------------------------
+// Root cause of "tidak listing hasil search": the old implementation
+// called DuckDuckGo's *Instant Answer* API (api.duckduckgo.com/?format=json),
+// which only returns a short Abstract/Answer/Infobox for well-known entities
+// (people, companies, encyclopedic topics). For ordinary search queries
+// (news, "cara install X", "harga Y hari ini", etc.) those fields are almost
+// always empty, so the tool silently returned "tidak ada hasil".
+//
+// Fix: scrape DuckDuckGo's HTML results page (html.duckduckgo.com/html/),
+// which is the same lite/no-JS endpoint DDG itself serves for non-JS
+// browsers. It returns real organic results (title + url + snippet) that
+// can be parsed with simple regex, no API key needed. The old Instant
+// Answer call is kept as a secondary fallback for direct-fact queries
+// (e.g. "ibukota Jepang") in case the HTML scrape returns zero results.
+// ---------------------------------------------------------------------
+// Keywords that signal the user wants scholarly/journal-type sources.
+// When matched, we run an additional query scoped to site:researchgate.net
+// and surface those results first (labeled), followed by the general web
+// results. Purely additive — general search behavior is unchanged when
+// none of these keywords are present.
+var ACADEMIC_KEYWORDS = [
+  "jurnal",
+  "artikel ilmiah",
+  "artikel penelitian",
+  "paper",
+  "riset",
+  "penelitian",
+  "skripsi",
+  "tesis",
+  "disertasi",
+  "studi ilmiah",
+  "publikasi ilmiah",
+  "literature review",
+  "tinjauan pustaka",
+  "research article",
+  "academic paper",
+  "journal article"
+];
+function isAcademicQuery(query) {
+  const norm = (query || "").toLowerCase();
+  return ACADEMIC_KEYWORDS.some((kw) => norm.includes(kw));
+}
+__name(isAcademicQuery, "isAcademicQuery");
+
+async function ddgHtmlSearch(query) {
+  const res = await fetch(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
+      }
+    }
+  );
+  if (!res.ok) return null;
+  const html = await res.text();
+  return parseDuckDuckGoHtml(html);
+}
+__name(ddgHtmlSearch, "ddgHtmlSearch");
+
 async function toolWebsearch(query) {
   if (!query) return "Query tidak boleh kosong.";
+  try {
+    const academic = isAcademicQuery(query);
+    if (academic) {
+      // Run a ResearchGate-scoped search alongside the general search.
+      const [generalResults, rgResults] = await Promise.all([
+        ddgHtmlSearch(query).catch(() => null),
+        ddgHtmlSearch(`site:researchgate.net ${query}`).catch(() => null)
+      ]);
+      const rg = (rgResults || []).filter((r) => /researchgate\.net/i.test(r.url)).slice(0, 5);
+      const general = (generalResults || []).filter((r) => !/researchgate\.net/i.test(r.url)).slice(0, 4);
+      if (rg.length === 0 && general.length === 0) {
+        const instant = await toolWebsearchInstant(query);
+        return instant;
+      }
+      const parts = [];
+      if (rg.length > 0) {
+        const rgLines = rg.map(
+          (r, i) => `${i + 1}. ${r.title}
+${r.url}${r.snippet ? "\n" + r.snippet : ""}`
+        );
+        parts.push(`ResearchGate:
+
+${rgLines.join("\n\n")}`);
+      } else {
+        parts.push("ResearchGate: tidak ada hasil yang cocok untuk query ini.");
+      }
+      if (general.length > 0) {
+        const genLines = general.map(
+          (r, i) => `${i + 1}. ${r.title}
+${r.url}${r.snippet ? "\n" + r.snippet : ""}`
+        );
+        parts.push(`Sumber lain:
+
+${genLines.join("\n\n")}`);
+      }
+      return `Hasil pencarian jurnal/artikel untuk "${query}":
+
+${parts.join("\n\n")}`;
+    }
+    // Non-academic query: normal general web search, unchanged behavior.
+    const results = (await ddgHtmlSearch(query)) || [];
+    const top = results.slice(0, 6);
+    if (top.length > 0) {
+      const lines = top.map(
+        (r, i) => `${i + 1}. ${r.title}
+${r.url}${r.snippet ? "\n" + r.snippet : ""}`
+      );
+      return `Hasil pencarian untuk "${query}":
+
+${lines.join("\n\n")}`;
+    }
+    // Fallback: no organic results parsed (layout changed / blocked / no matches)
+    // -> try the Instant Answer API for a direct-fact style response.
+    const instant = await toolWebsearchInstant(query);
+    return instant;
+  } catch (err) {
+    return "Error saat mencari di web: " + err.message;
+  }
+}
+__name(toolWebsearch, "toolWebsearch");
+
+function parseDuckDuckGoHtml(html) {
+  const results = [];
+  // Each organic result on html.duckduckgo.com looks like:
+  // <a rel="nofollow" class="result__a" href="...">Title</a> ... <a class="result__snippet" ...>Snippet</a>
+  const blockRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+  let m;
+  while ((m = blockRe.exec(html)) !== null) {
+    const url = extractRealUrl(decodeHtmlEntities(m[1]));
+    const title = stripTags(decodeHtmlEntities(m[2])).trim();
+    const snippet = stripTags(decodeHtmlEntities(m[3])).trim();
+    if (title && url) results.push({ title, url, snippet });
+  }
+  // Fallback pattern in case DDG omits the snippet anchor for some results
+  if (results.length === 0) {
+    const titleOnlyRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    while ((m = titleOnlyRe.exec(html)) !== null) {
+      const url = extractRealUrl(decodeHtmlEntities(m[1]));
+      const title = stripTags(decodeHtmlEntities(m[2])).trim();
+      if (title && url) results.push({ title, url, snippet: "" });
+    }
+  }
+  return results;
+}
+__name(parseDuckDuckGoHtml, "parseDuckDuckGoHtml");
+
+function extractRealUrl(ddgUrl) {
+  // DDG wraps result links like //duckduckgo.com/l/?uddg=<encoded-real-url>&rut=...
+  try {
+    let u = ddgUrl;
+    if (u.startsWith("//")) u = "https:" + u;
+    if (u.startsWith("/")) u = "https://duckduckgo.com" + u;
+    const parsed = new URL(u);
+    const uddg = parsed.searchParams.get("uddg");
+    if (uddg) return decodeURIComponent(uddg);
+    return u;
+  } catch {
+    return ddgUrl;
+  }
+}
+__name(extractRealUrl, "extractRealUrl");
+
+function stripTags(s) {
+  return s.replace(/<[^>]+>/g, "");
+}
+__name(stripTags, "stripTags");
+
+function decodeHtmlEntities(s) {
+  return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, " ");
+}
+__name(decodeHtmlEntities, "decodeHtmlEntities");
+
+async function toolWebsearchInstant(query) {
   try {
     const res = await fetch(
       `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
       { headers: { "User-Agent": "telegram-ai-bot/1.0" } }
     );
-    if (!res.ok) return "Gagal mengakses DuckDuckGo.";
+    if (!res.ok) return `Tidak ada hasil untuk "${query}". Coba kata kunci lain.`;
     const data = await res.json();
     const parts = [];
     if (data.Abstract) parts.push(data.Abstract);
@@ -1593,12 +1777,16 @@ async function toolWebsearch(query) {
       const info = data.Infobox.content.slice(0, 5).map((c) => `- ${c.label}: ${c.value}`).join("\n");
       if (info) parts.push(info);
     }
-    return parts.length ? parts.join("\n\n") : `Tidak ada hasil untuk "${query}". Coba kata kunci lain.`;
+    return parts.length ? parts.join("\n\n") : `Tidak ada hasil untuk "${query}". Coba kata kunci lain atau lebih spesifik.`;
   } catch {
-    return "Error saat mencari di web.";
+    return `Tidak ada hasil untuk "${query}". Coba kata kunci lain.`;
   }
 }
-__name(toolWebsearch, "toolWebsearch");
+__name(toolWebsearchInstant, "toolWebsearchInstant");
+// ---------------------------------------------------------------------
+// END WEBSEARCH FIX
+// ---------------------------------------------------------------------
+
 function canonicalIdentityAnswer(text, model) {
   const norm = (text || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   const botRef = /\b(kamu|kau|anda|lu|lo|bot|u)\b/.test(norm);
@@ -2098,30 +2286,163 @@ async function getServiceToken(env, fromId, service) {
   return row?.token || null;
 }
 __name(getServiceToken, "getServiceToken");
-function extractPdfText(data) {
-  const decoder = new TextDecoder("utf-8");
-  const raw = decoder.decode(data);
-  let cleaned = raw.replace(/\/[A-Za-z]+\s*<<[\s\S]*?>>/g, "").replace(/\/Filter\s*\/[A-Za-z0-9]+/g, "");
+// ---------------------------------------------------------------------
+// PDF TEXT EXTRACTION — FIXED
+// ---------------------------------------------------------------------
+// Root cause of "Teks tidak dapat diekstrak / PDF mungkin terkompresi":
+// the old implementation ran Tj/TJ regexes directly on the *raw* PDF
+// bytes. But nearly all real-world PDFs (anything exported from Word,
+// LibreOffice, browsers, etc.) store page content inside streams
+// compressed with /FlateDecode (zlib). Scanning the compressed bytes for
+// "(text) Tj" patterns will basically never match -- it's compressed
+// binary, not text -- so almost every normal PDF hit the fallback
+// message, not just scans.
+//
+// Fix: locate each `obj ... stream ... endstream ... endobj` block, and
+// when its dictionary declares /FlateDecode, inflate the stream with the
+// platform's DecompressionStream('deflate') (Workers supports this
+// natively) before running the Tj/TJ extraction on the decompressed
+// content. Non-flate / already-plain streams are scanned as-is. Image
+// streams (/Subtype /Image) are skipped since they can't contain text.
+//
+// This still won't recover text from actual scanned/rasterized PDFs
+// (no text layer at all) or PDFs using embedded CID/Identity-H fonts
+// with no direct ASCII mapping -- those are genuine OCR-needed cases --
+// but it now correctly reads the huge majority of normal, compressed,
+// digitally-created PDFs that used to be misreported as "terkompresi".
+// ---------------------------------------------------------------------
+async function inflateFlateStream(bytes) {
+  try {
+    const ds = new DecompressionStream("deflate");
+    const writer = ds.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    const chunks = [];
+    const reader = ds.readable.getReader();
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) {
+      out.set(c, off);
+      off += c.length;
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+__name(inflateFlateStream, "inflateFlateStream");
+
+function unescapePdfString(s) {
+  return s.replace(/\\([nrtbf()\\]|\r\n|\r|\n|[0-7]{1,3})/g, (whole, esc) => {
+    switch (esc) {
+      case "n":
+        return "\n";
+      case "r":
+        return "\r";
+      case "t":
+        return "\t";
+      case "b":
+        return "\b";
+      case "f":
+        return "\f";
+      case "(":
+        return "(";
+      case ")":
+        return ")";
+      case "\\":
+        return "\\";
+      case "\r\n":
+      case "\r":
+      case "\n":
+        return "";
+      default:
+        if (/^[0-7]{1,3}$/.test(esc)) return String.fromCharCode(parseInt(esc, 8));
+        return whole;
+    }
+  });
+}
+__name(unescapePdfString, "unescapePdfString");
+
+function extractTjText(content) {
   const results = [];
+  const tjRe = /\(((?:[^()\\]|\\.)*)\)\s*Tj/g;
   let m2;
-  const tjRe = /\(([^)]*)\)\s*Tj/g;
-  while ((m2 = tjRe.exec(raw)) !== null) results.push(m2[1]);
-  const tjArrRe = /\[([^\]]*)\]\s*TJ/g;
-  while ((m2 = tjArrRe.exec(raw)) !== null) {
-    const inner = m2[1].match(/\(([^)]*)\)/g);
-    if (inner) for (const i of inner) results.push(i.slice(1, -1));
+  while ((m2 = tjRe.exec(content)) !== null) results.push(unescapePdfString(m2[1]));
+  const tjArrRe = /\[((?:[^\[\]]|\\.)*)\]\s*TJ/g;
+  while ((m2 = tjArrRe.exec(content)) !== null) {
+    const inner = m2[1].match(/\(((?:[^()\\]|\\.)*)\)/g);
+    if (inner) for (const i of inner) results.push(unescapePdfString(i.slice(1, -1)));
   }
-  const text = results.join(" ").trim();
-  if (text) return text;
-  const btRe = /BT\s*([\s\S]*?)\s*ET/g;
-  const btResults = [];
-  while ((m2 = btRe.exec(raw)) !== null) {
-    const lines = m2[1].match(/\(([^)]*)\)/g);
-    if (lines) for (const l of lines) btResults.push(l.slice(1, -1));
+  return results;
+}
+__name(extractTjText, "extractTjText");
+
+async function extractPdfText(data) {
+  try {
+    // latin1 decode maps each byte 1:1 to a char code, so string indices
+    // stay aligned with byte offsets in `data` -- needed to slice binary
+    // stream bytes precisely for decompression.
+    const raw = new TextDecoder("latin1").decode(data);
+    const fragments = [];
+    let foundAnyStream = false;
+    const objRe = /\d+\s+\d+\s+obj([\s\S]*?)endobj/g;
+    let om;
+    while ((om = objRe.exec(raw)) !== null) {
+      const full = om[0];
+      const objStartOffset = om.index;
+      const streamIdx = full.indexOf("stream");
+      if (streamIdx === -1) continue;
+      let dataStart = streamIdx + "stream".length;
+      if (full[dataStart] === "\r") dataStart++;
+      if (full[dataStart] === "\n") dataStart++;
+      const endIdx = full.indexOf("endstream", dataStart);
+      if (endIdx === -1) continue;
+      let dataEnd = endIdx;
+      if (full[dataEnd - 1] === "\n") dataEnd--;
+      if (full[dataEnd - 1] === "\r") dataEnd--;
+      const dict = full.slice(0, streamIdx);
+      if (/\/Subtype\s*\/Image/.test(dict)) continue;
+      const absStart = objStartOffset + dataStart;
+      const absEnd = objStartOffset + dataEnd;
+      if (absEnd <= absStart) continue;
+      const streamBytes = data.slice(absStart, absEnd);
+      foundAnyStream = true;
+      const isFlate = /\/Filter\s*(\/FlateDecode|\[[^\]]*\/FlateDecode[^\]]*\])/.test(dict);
+      let contentBytes = streamBytes;
+      if (isFlate) {
+        const inflated = await inflateFlateStream(streamBytes);
+        if (!inflated) continue;
+        contentBytes = inflated;
+      }
+      const contentStr = new TextDecoder("latin1").decode(contentBytes);
+      fragments.push(contentStr);
+    }
+    let results = [];
+    for (const frag of fragments) results.push(...extractTjText(frag));
+    let text = results.join(" ").replace(/\s+/g, " ").trim();
+    if (!text) {
+      // Malformed/older PDFs without obj..endobj wrapping around the
+      // stream, or nothing matched above -- fall back to scanning raw
+      // bytes directly (covers simple, uncompressed PDFs).
+      results = extractTjText(raw);
+      text = results.join(" ").replace(/\s+/g, " ").trim();
+    }
+    if (text) return text;
+    return foundAnyStream ? "(Teks tidak dapat diekstrak. PDF kemungkinan hasil scan/gambar tanpa lapisan teks, atau memakai encoding font khusus yang tidak didukung.)" : "(Tidak ditemukan stream konten di PDF ini.)";
+  } catch (err) {
+    return `(Gagal parsing PDF: ${err.message})`;
   }
-  return btResults.join(" ").trim() || "(Teks tidak dapat diekstrak. PDF mungkin terkompresi atau scan.)";
 }
 __name(extractPdfText, "extractPdfText");
+// ---------------------------------------------------------------------
+// END PDF TEXT EXTRACTION FIX
+// ---------------------------------------------------------------------
 function extractDocxText(data) {
   try {
     const view = new DataView(data.buffer || data);
