@@ -762,6 +762,78 @@ chatId,
       return new Response('OK', { status: 200 });
     }
 
+
+    if (cmdWord === '/addprovider') {
+      const args = cmdArg.split(/\s+/).filter(Boolean);
+      const id = (args[0] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const baseUrl = (args[1] || '').replace(/\/+$/, '');
+      const apiKey = args[2] || '';
+      const label = args.slice(3).join(' ') || id;
+      if (!id || !baseUrl || !apiKey) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Format: /addprovider <id> <base_url> <api_key> [label]');
+        return new Response('OK', { status: 200 });
+      }
+      if (!/^https?:\/\//.test(baseUrl)) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Base URL harus diawali http:// atau https://');
+        return new Response('OK', { status: 200 });
+      }
+      if (!env.DB) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 tidak tersedia.');
+        return new Response('OK', { status: 200 });
+      }
+      try {
+        const testRes = await fetch(baseUrl + '/models', {
+          headers: { Authorization: 'Bearer ' + apiKey },
+        });
+        if (!testRes.ok) {
+          await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'API tidak valid (HTTP ' + testRes.status + '). Cek base_url dan key.');
+          return new Response('OK', { status: 200 });
+        }
+      } catch (err) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Gagal koneksi: ' + err.message);
+        return new Response('OK', { status: 200 });
+      }
+      await env.DB.prepare(
+        'INSERT OR REPLACE INTO provider_configs (id, base_url, api_key, label, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(id, baseUrl, apiKey, label, Date.now(), Date.now()).run();
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, '\u2705 Provider **' + label + '** (' + id + ') ditambahkan.');
+      return new Response('OK', { status: 200 });
+    }
+
+    if (cmdWord === '/delprovider') {
+      const id = (cmdArg.split(/\s+/)[0] || '').toLowerCase();
+      if (!id) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Format: /delprovider <id>');
+        return new Response('OK', { status: 200 });
+      }
+      if (!env.DB) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 tidak tersedia.');
+        return new Response('OK', { status: 200 });
+      }
+      await env.DB.prepare('DELETE FROM provider_configs WHERE id = ?').bind(id).run();
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Provider ' + id + ' dihapus.');
+      return new Response('OK', { status: 200 });
+    }
+
+    if (cmdWord === '/providers') {
+      if (!env.DB) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 tidak tersedia.');
+        return new Response('OK', { status: 200 });
+      }
+      const rows = await env.DB.prepare(
+        "SELECT id, label, substr(api_key,1,6) || '****' AS masked_key, base_url FROM provider_configs"
+      ).all();
+      const list = (rows.results || []).map((p) =>
+        '- **' + p.label + '** (' + p.id + '): ' + p.base_url + ' [' + p.masked_key + ']'
+      ).join('\n');
+      await sendTelegram(
+        env.TELEGRAM_TOKEN,
+        chatId,
+        list ? '**Provider terdaftar:**\n' + list + '\n\nGunakan format model:provider untuk memilih.' : 'Belum ada provider. /addprovider untuk menambah.'
+      );
+      return new Response('OK', { status: 200 });
+    }
+
     if (cmdWord === '/need-supabase') {
       const projName = (cmdArg.split(/\s+/)[0] || '').toLowerCase();
       if (!/^[a-z][a-z0-9-]{2,23}$/.test(projName)) {
