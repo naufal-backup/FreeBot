@@ -229,20 +229,18 @@ export default {
       const activeModel = await getActiveModel(env, chatId);
       const target = cmdArg.split(/\s+/)[0];
       if (!target) {
-        const list = await formatModelList(env);
-        const modelList = list ? `\n\nModel tersedia (live /v1/models):\n${list}` : '\n\n(daftar model gagal dimuat)';
-        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model aktif sesi ini: ${activeModel}\nGanti: /model <nama>.${modelList}`);
+        const allList = await formatAllProviderModels(env);
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model aktif: ${activeModel}\n\n${allList}\n\nGanti: /model <nama>  (format model:provider)`);
         return new Response('OK', { status: 200 });
       }
-      // switch: validasi ke daftar live
+      // switch: validasi ke daftar SEMUA provider
       if (!env.DB) {
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 belum dikonfigurasi.');
         return new Response('OK', { status: 200 });
       }
-      const models = await fetchModelList(env);
-      const exists = models ? models.some((m) => m.id === target) : FALLBACK_MODELS.includes(target);
+      const exists = await validateModelTarget(env, target);
       if (!exists) {
-        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model "${target}" tidak dikenal. Gunakan /model untuk melihat daftar.`);
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model "${target}" tidak dikenal. Lihat /models.`);
         return new Response('OK', { status: 200 });
       }
       await setActiveModel(env, chatId, target);
@@ -252,11 +250,11 @@ export default {
 
     if (cmdWord === '/models') {
       const activeModel = await getActiveModel(env, chatId);
-      const list = await formatModelList(env);
+      const allList = await formatAllProviderModels(env);
       await sendTelegram(
         env.TELEGRAM_TOKEN,
         chatId,
-        list ? `Model aktif: ${activeModel}\n\nDaftar model (live /v1/models):\n${list}` : 'Gagal memuat daftar model dari Geraikita. Coba lagi nanti.'
+        `Model aktif: ${activeModel}\n\n${allList}`
       );
       return new Response('OK', { status: 200 });
     }
@@ -821,15 +819,16 @@ chatId,
         return new Response('OK', { status: 200 });
       }
       const rows = await env.DB.prepare(
-        "SELECT id, label, substr(api_key,1,6) || '****' AS masked_key, base_url FROM provider_configs"
+        "SELECT id, label, api_key, base_url FROM provider_configs"
       ).all();
-      const list = (rows.results || []).map((p) =>
-        '- **' + p.label + '** (' + p.id + '): ' + p.base_url + ' [' + p.masked_key + ']'
-      ).join('\n');
+      const blocks = (rows.results || []).map((p) =>
+        '- **' + (p.label || p.id) + '** (' + p.id + '): ' + p.base_url + ' [' + maskApiKey(p.api_key) + ']'
+      );
+      blocks.push('- **default** (geraikita): ' + DEFAULT_API_BASE + ' [' + maskApiKey(env.EXTERNAL_API_KEY) + ']  (via EXTERNAL_API_KEY)');
       await sendTelegram(
         env.TELEGRAM_TOKEN,
         chatId,
-        list ? '**Provider terdaftar:**\n' + list + '\n\nGunakan format model:provider untuk memilih.' : 'Belum ada provider. /addprovider untuk menambah.'
+        '**Provider terdaftar:**\n' + blocks.join('\n') + '\n\nGunakan format model:provider untuk memilih.'
       );
       return new Response('OK', { status: 200 });
     }
@@ -883,7 +882,8 @@ chatId,
 
     // --- Strict identity: deterministik, sebelum AI dipanggil ---
     const activeModelForId = await getActiveModel(env, chatId);
-    const identityAnswer = canonicalIdentityAnswer(userText, activeModelForId);
+    const identityModelName = (activeModelForId || '').split(':')[0];
+    const identityAnswer = canonicalIdentityAnswer(userText, identityModelName);
     if (identityAnswer) {
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, identityAnswer);
       return new Response('OK', { status: 200 });
@@ -891,9 +891,10 @@ chatId,
 
     try {
       // 3. Send user text to AI (OpenAI-compatible)
-      const { base_url, api_key } = await getActiveApi(env);
+      const { base_url, api_key } = await getActiveApi(env, chatId);
       const EXTERNAL_API_URL = `${base_url}/chat/completions`;
-      const AI_MODEL = activeModelForId;
+      // activeModelForId bisa berformat "model:provider" -> kirim id saja ke API
+      const AI_MODEL = (activeModelForId || '').split(':')[0] || 'deepseek-v4-flash';
 
       // Kirim pesan "Typing..." & auto-stop setelah 30 detik via setTimeout
       let typingMessageId = null;
@@ -1458,17 +1459,14 @@ async function executeTool(toolCall, env, chatId, fromId) {
       }
 
       case 'list_models': {
-        const models = await fetchModelList(env);
-        if (!models) return 'Gagal memuat daftar model.';
-        return models.map((m) => `${m.id} (${m.vendor})`).join('\n');
+        return await formatAllProviderModels(env);
       }
 
       case 'switch_model': {
         const model = args.model;
         if (!model) return 'Model tidak boleh kosong.';
-        const modelList = await fetchModelList(env);
-        const exists = modelList ? modelList.some((m) => m.id === model) : FALLBACK_MODELS.includes(model);
-        if (!exists) return `Model "${model}" tidak dikenal. Gunakan /models untuk melihat daftar.`;
+        const exists = await validateModelTarget(env, model);
+        if (!exists) return `Model "${model}" tidak dikenal. Gunakan /models untuk melihat daftar (format model:provider).`;
         await setActiveModel(env, chatId, model);
         return `Model sesi ini diganti ke: ${model}`;
       }
@@ -1941,9 +1939,23 @@ async function clearApiConfig(env) {
 }
 
 /**
- * Ambil base_url + api_key aktif. Prioritas: D1 api_config > default Geraikita.
+ * Ambil base_url + api_key aktif.
+ * chat_settings model berprefix ":provider" -> pakai provider_configs tsb.
+ * Fallback: api_config (global) > default Geraikita.
  */
-async function getActiveApi(env) {
+async function getActiveApi(env, chatId) {
+  if (chatId && env.DB) {
+    try {
+      const row = await env.DB.prepare('SELECT model FROM chat_settings WHERE chat_id = ?')
+        .bind(String(chatId)).first();
+      const prov = ((row?.model || '').split(':')[1] || '');
+      if (prov) {
+        const p = await env.DB.prepare('SELECT base_url, api_key FROM provider_configs WHERE id = ?')
+          .bind(prov).first();
+        if (p) return { base_url: p.base_url, api_key: p.api_key };
+      }
+    } catch {}
+  }
   const config = await getApiConfig(env);
   return config
     ? { base_url: config.base_url, api_key: config.api_key }
@@ -1959,45 +1971,88 @@ function maskApiKey(key) {
 }
 
 /**
- * Fetch daftar model live dari API aktif.
- * Return array {id, vendor} atau null saat gagal.
+ * Ambil semua provider: baris api_config (label default) + provider_configs.
  */
-async function fetchModelList(env) {
+async function getAllProviders(env) {
+  const list = [];
+  if (env.DB) {
+    try {
+      const rows = await env.DB.prepare('SELECT id, base_url, api_key, label FROM provider_configs').all();
+      for (const p of (rows.results || [])) list.push(p);
+    } catch {}
+    try {
+      const cfg = await env.DB.prepare("SELECT base_url, api_key FROM api_config WHERE id = 'active'").first();
+      if (cfg) list.unshift({ id: 'default', base_url: cfg.base_url, api_key: cfg.api_key, label: 'default' });
+    } catch {}
+  }
+  if (!list.length) list.push({ id: 'geraikita', base_url: DEFAULT_API_BASE, api_key: env.EXTERNAL_API_KEY, label: 'geraikita' });
+  return list;
+}
+
+/**
+ * Fetch daftar model id dari satu API. Return array id atau null.
+ */
+async function fetchProviderModels(baseUrl, apiKey) {
   try {
-    const { base_url, api_key } = await getActiveApi(env);
-    const res = await fetch(`${base_url}/models`, {
-      headers: { Authorization: `Bearer ${api_key}` },
+    const res = await fetch(baseUrl + '/models', {
+      headers: { Authorization: 'Bearer ' + apiKey },
     });
     if (!res.ok) return null;
     const data = await res.json();
-    if (!Array.isArray(data?.data) || data.data.length === 0) return null;
-    return data.data
-      .filter((m) => typeof m?.id === 'string' && m.id.length > 0)
-      .map((m) => ({ id: m.id, vendor: m.owned_by || 'Lainnya' }));
+    if (!Array.isArray(data?.data)) return null;
+    return data.data.filter((m) => typeof m?.id === 'string' && m.id).map((m) => m.id);
   } catch {
     return null;
   }
 }
 
 /**
- * Format daftar model terkategori untuk pesan Telegram.
+ * Daftar model dari API aktif saja (legacy). Return array {id, vendor} atau null.
  */
-async function formatModelList(env) {
-  let models = await fetchModelList(env);
-  if (!models) {
-    models = FALLBACK_MODELS.map((id) => ({ id, vendor: 'Lainnya' }));
+async function fetchModelList(env) {
+  try {
+    const { base_url, api_key } = await getActiveApi(env, null);
+    const ids = await fetchProviderModels(base_url, api_key);
+    return ids ? ids.map((id) => ({ id, vendor: 'API' })) : null;
+  } catch {
+    return null;
   }
-  const byVendor = {};
-  for (const m of models) {
-    const label = VENDOR_LABEL[m.vendor] || m.vendor;
-    (byVendor[label] ||= []).push(m.id);
+}
+
+/**
+ * Agregasi SEMUA provider -> array {label:"model:provider", id, provider}.
+ */
+async function getAllModels(env) {
+  const providers = await getAllProviders(env);
+  const out = [];
+  for (const p of providers) {
+    const ids = await fetchProviderModels(p.base_url, p.api_key);
+    for (const id of (ids || [])) out.push({ label: id + ':' + p.id, id, provider: p.id });
   }
-  const lines = [];
-  for (const vendor of Object.keys(byVendor).sort()) {
-    lines.push(`— ${vendor} —`);
-    for (const id of byVendor[vendor].sort()) lines.push(`  ${id}`);
+  return out;
+}
+
+/**
+ * Validasi target model terhadap daftar agregat (semua provider).
+ */
+async function validateModelTarget(env, target) {
+  const models = await getAllModels(env);
+  return models.some((m) => m.label === target || m.id === target) || FALLBACK_MODELS.includes(target);
+}
+
+/**
+ * Format daftar model SEMUA provider: dikelompokkan per provider, pola model:provider.
+ */
+async function formatAllProviderModels(env) {
+  const providers = await getAllProviders(env);
+  const blocks = [];
+  for (const p of providers) {
+    const ids = await fetchProviderModels(p.base_url, p.api_key);
+    if (ids && ids.length) {
+      blocks.push('\u{1f50c} ' + (p.label || p.id) + ' (' + p.id + '):\n' + ids.map((id) => '  ' + id + ':' + p.id).join('\n'));
+    }
   }
-  return lines.join('\n');
+  return blocks.join('\n\n') || '(tidak ada model yang dapat dimuat)';
 }
 
 // --- Memori chat per room ---
