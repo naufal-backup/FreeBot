@@ -145,17 +145,48 @@ export default {
       return new Response('OK', { status: 200 });
     }
 
-    // 2. Guard: ignore non-text updates (sticker, photo, edited_message, etc.)
+    // 2. Guard: terima text, caption, voice, dan document (PDF/DOCX).
     const chatId = update?.message?.chat?.id;
     const voiceInfo = update?.message?.voice;
-    let userText = update?.message?.text;
+    const docInfo = update?.message?.document;
+    // Caption (teks yang menyertai foto/dokumen) juga dianggap input user.
+    let userText = (update?.message?.text || update?.message?.caption || '').trim();
     const fromId = update?.message?.from?.id;
     const messageId = update?.message?.message_id;
     if (!chatId || !fromId) {
       return new Response('OK', { status: 200 });
     }
 
-    // 2a. Voice note: transkripsi dulu jadi teks (tanpa simpan file permanen).
+    // 2a. Dokumen (PDF/DOCX): ekstrak teks lalu jadikan konteks (digung caption bila ada).
+    if (docInfo) {
+      const fileName = docInfo.file_name || '';
+      const mime = docInfo.mime_type || '';
+      const supported = /\.(pdf|docx)$/i.test(fileName) || /pdf|wordprocessingml/i.test(mime);
+      if (!supported) {
+        userText = userText || '(User mengirim dokumen "' + fileName + '"; format tidak didukung. Yang bisa dibaca: PDF & DOCX.)';
+      } else {
+        if (docInfo.file_size > 20 * 1024 * 1024) {
+          await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Ukuran dokumen melebihi batas 20MB.');
+          return new Response('OK', { status: 200 });
+        }
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Membaca dokumen...');
+        try {
+          const hint = /\.(pdf)$/i.test(fileName) ? 'pdf' : (/\.docx$/i.test(fileName) ? 'docx' : (mime.includes('wordprocessingml') ? 'docx' : (mime.includes('pdf') ? 'pdf' : '')));
+          const text = await extractDocumentText(env, docInfo.file_id, fileName, hint);
+          if (text && text.trim()) {
+            userText = 'Isi dokumen "' + (fileName || 'dokumen') + '":\n\n' + text.trim().slice(0, 15000)
+              + (userText ? '\n\nInstruksi user: ' + userText : '\n\nRingkas isi dokumen ini.');
+          } else {
+            userText = userText || 'Dokumen "' + (fileName || 'dokumen') + '" tidak memuat teks yang bisa dibaca. (PDF hasil scan / terkompresi tidak bisa diekstrak.)';
+          }
+        } catch (err) {
+          console.error('doc extract error:', err.message);
+          userText = userText || 'Gagal membaca dokumen: ' + err.message;
+        }
+      }
+    }
+
+    // 2b. Voice note: transkripsi dulu jadi teks (tanpa simpan file permanen).
     if (!userText && voiceInfo) {
       const transcribed = await transcribeVoiceNote(env, voiceInfo, chatId);
       if (transcribed === null) {
@@ -166,7 +197,7 @@ export default {
         return new Response('OK', { status: 200 });
       }
     } else if (!userText) {
-      // Sticker/foto/dll → abaikan, jangan retry
+      // Sticker/foto tanpa caption/dll → abaikan, jangan retry
       return new Response('OK', { status: 200 });
     }
 
@@ -2557,7 +2588,7 @@ function extractDocxText(data) {
  * Download file dari Telegram dan ekstrak teks dari PDF atau DOCX.
  * File TIDAK disimpan permanen — hanya di RAM sementara lalu di-GC.
  */
-async function extractDocumentText(env, fileId, fileName) {
+async function extractDocumentText(env, fileId, fileName, mimeHint) {
   const fileRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/getFile`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ file_id: fileId }),
@@ -2569,8 +2600,17 @@ async function extractDocumentText(env, fileId, fileName) {
   if (!dl.ok) throw new Error('Gagal download file.');
   const buf = await dl.arrayBuffer();
   const bytes = new Uint8Array(buf);
-  if (/\.pdf$/i.test(fileName)) return extractPdfText(bytes);
-  if (/\.docx$/i.test(fileName)) return extractDocxText(bytes);
+  // Deteksi format: dari ekstensi nama file, lalu fallback ke hint (mime/argumen)
+  const nm = (fileName || '').toLowerCase();
+  const hint = (mimeHint || '').toLowerCase();
+  const isPdf = /\.pdf$/.test(nm) || nm.endsWith('.pdf') || hint === 'pdf' || hint.includes('pdf');
+  const isDocx = /\.docx$/.test(nm) || hint === 'docx' || hint.includes('wordprocessing') || hint.includes('officedocument');
+  // Fallback: cek magic byte. PDF selalu diawali "%PDF". DOCX (ZIP) diawali "PK".
+  const sig = String.fromCharCode(...bytes.slice(0, 4));
+  if (sig.startsWith('%PDF')) return extractPdfText(bytes);
+  if (sig.startsWith('PK') && (isDocx || !isPdf)) return extractDocxText(bytes);
+  if (isPdf) return extractPdfText(bytes);
+  if (isDocx) return extractDocxText(bytes);
   throw new Error('Format tidak didukung. Kirim PDF atau DOCX.');
 }
 
