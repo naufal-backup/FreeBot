@@ -229,33 +229,27 @@ export default {
       const activeModel = await getActiveModel(env, chatId);
       const target = cmdArg.split(/\s+/)[0];
       if (!target) {
-        const allList = await formatAllProviderModels(env);
-        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model aktif: ${activeModel}\n\n${allList}\n\nGanti: /model <nama>  (format model:provider)`);
+        await sendModelList(env, chatId, `Model aktif: ${activeModel}\nGanti: /model <nama> (format model:provider)`);
         return new Response('OK', { status: 200 });
       }
-      // switch: validasi ke daftar SEMUA provider
+      // switch: resolve ke label real (semua provider, display/real, boleh tanpa :provider)
       if (!env.DB) {
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 belum dikonfigurasi.');
         return new Response('OK', { status: 200 });
       }
-      const exists = await validateModelTarget(env, target);
-      if (!exists) {
+      const resolved = await resolveModelLabel(env, target);
+      if (!resolved) {
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model "${target}" tidak dikenal. Lihat /models.`);
         return new Response('OK', { status: 200 });
       }
-      await setActiveModel(env, chatId, target);
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model sesi ini diganti ke: ${target}`);
+      await setActiveModel(env, chatId, resolved);
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model sesi ini diganti ke: ${resolved}`);
       return new Response('OK', { status: 200 });
     }
 
     if (cmdWord === '/models') {
       const activeModel = await getActiveModel(env, chatId);
-      const allList = await formatAllProviderModels(env);
-      await sendTelegram(
-        env.TELEGRAM_TOKEN,
-        chatId,
-        `Model aktif: ${activeModel}\n\n${allList}`
-      );
+      await sendModelList(env, chatId, `Model aktif: ${activeModel}`);
       return new Response('OK', { status: 200 });
     }
 
@@ -889,6 +883,10 @@ chatId,
       return new Response('OK', { status: 200 });
     }
 
+    // Dikeluaran dari try agar catch selalu bisa akses (hindari ReferenceError -> 500)
+    let typingMessageId = null;
+    let typingTimer = null;
+
     try {
       // 3. Send user text to AI (OpenAI-compatible)
       const { base_url, api_key } = await getActiveApi(env, chatId);
@@ -897,8 +895,6 @@ chatId,
       const AI_MODEL = (activeModelForId || '').split(':')[0] || 'deepseek-v4-flash';
 
       // Kirim pesan "Typing..." & auto-stop setelah 30 detik via setTimeout
-      let typingMessageId = null;
-      let typingTimer = null;
       try {
         const typingRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
           method: 'POST',
@@ -1459,16 +1455,18 @@ async function executeTool(toolCall, env, chatId, fromId) {
       }
 
       case 'list_models': {
-        return await formatAllProviderModels(env);
+        const models = await getAllModels(env);
+        if (!models.length) return 'Tidak ada provider yang berhasil memuat model.';
+        return models.map((m) => m.dispLabel).join('\n');
       }
 
       case 'switch_model': {
         const model = args.model;
         if (!model) return 'Model tidak boleh kosong.';
-        const exists = await validateModelTarget(env, model);
-        if (!exists) return `Model "${model}" tidak dikenal. Gunakan /models untuk melihat daftar (format model:provider).`;
-        await setActiveModel(env, chatId, model);
-        return `Model sesi ini diganti ke: ${model}`;
+        const resolved = await resolveModelLabel(env, model);
+        if (!resolved) return `Model "${model}" tidak dikenal. Gunakan /models untuk melihat daftar (format model:provider).`;
+        await setActiveModel(env, chatId, resolved);
+        return `Model sesi ini diganti ke: ${resolved}`;
       }
 
       case 'newproject': {
@@ -1990,7 +1988,8 @@ async function getAllProviders(env) {
 }
 
 /**
- * Fetch daftar model id dari satu API. Return array id atau null.
+ * Fetch daftar model dari satu API. Return array {id(real), disp} atau null saat gagal.
+ * Prefiks redundan (mis. "models/" dari Anthropic/Google) dibuang untuk tampilan saja.
  */
 async function fetchProviderModels(baseUrl, apiKey) {
   try {
@@ -2000,7 +1999,9 @@ async function fetchProviderModels(baseUrl, apiKey) {
     if (!res.ok) return null;
     const data = await res.json();
     if (!Array.isArray(data?.data)) return null;
-    return data.data.filter((m) => typeof m?.id === 'string' && m.id).map((m) => m.id);
+    return data.data
+      .filter((m) => typeof m?.id === 'string' && m.id)
+      .map((m) => ({ id: m.id, disp: m.id.replace(/^models\//, '') }));
   } catch {
     return null;
   }
@@ -2013,46 +2014,94 @@ async function fetchModelList(env) {
   try {
     const { base_url, api_key } = await getActiveApi(env, null);
     const ids = await fetchProviderModels(base_url, api_key);
-    return ids ? ids.map((id) => ({ id, vendor: 'API' })) : null;
+    return ids ? ids.map((m) => ({ id: m.disp, vendor: 'API' })) : null;
   } catch {
     return null;
   }
 }
 
 /**
- * Agregasi SEMUA provider -> array {label:"model:provider", id, provider}.
+ * Agregasi SEMUA provider.
+ * Return array {real, disp, provider, realLabel, dispLabel}.
+ * Provider yang gagal memuat model otomatis dilewati (tidak memblokir yang lain).
  */
 async function getAllModels(env) {
   const providers = await getAllProviders(env);
   const out = [];
   for (const p of providers) {
-    const ids = await fetchProviderModels(p.base_url, p.api_key);
-    for (const id of (ids || [])) out.push({ label: id + ':' + p.id, id, provider: p.id });
+    const list = await fetchProviderModels(p.base_url, p.api_key);
+    if (!list || !list.length) continue; // skip provider yang mati/error
+    for (const m of list) {
+      out.push({
+        real: m.id,
+        disp: m.disp,
+        provider: p.id,
+        realLabel: m.id + ':' + p.id,
+        dispLabel: m.disp + ':' + p.id,
+      });
+    }
   }
   return out;
+}
+
+/**
+ * Resolve target model (boleh versi display atau real, boleh tanpa :provider)
+ * ke label REAL yang harus disimpan di chat_settings. Return null jika tak dikenal.
+ */
+async function resolveModelLabel(env, target) {
+  if (!target) return null;
+  const models = await getAllModels(env);
+  const t = target.trim();
+  const withProv = models.find((m) => m.dispLabel === t || m.realLabel === t);
+  if (withProv) return withProv.realLabel;
+  const bare = models.find((m) => m.disp === t || m.id === t);
+  if (bare) return bare.realLabel;
+  return FALLBACK_MODELS.includes(t) ? t : null;
 }
 
 /**
  * Validasi target model terhadap daftar agregat (semua provider).
  */
 async function validateModelTarget(env, target) {
-  const models = await getAllModels(env);
-  return models.some((m) => m.label === target || m.id === target) || FALLBACK_MODELS.includes(target);
+  return (await resolveModelLabel(env, target)) !== null;
 }
 
 /**
- * Format daftar model SEMUA provider: dikelompokkan per provider, pola model:provider.
+ * Bangun daftar model SEMUA provider sebagai BEBERAPA pesan (chunk).
+ * Setiap provider = 1 blok; blok yang melewati batas Telegram dipecah lagi.
+ * Provider yang gagal memuat daftar model dilewati (tidak membuat /models kosong).
  */
-async function formatAllProviderModels(env) {
+async function buildModelChunks(env) {
   const providers = await getAllProviders(env);
-  const blocks = [];
+  const chunks = [];
+  const LIMIT = 3600; // aman di bawah limit Telegram 4096
   for (const p of providers) {
-    const ids = await fetchProviderModels(p.base_url, p.api_key);
-    if (ids && ids.length) {
-      blocks.push('\u{1f50c} ' + (p.label || p.id) + ' (' + p.id + '):\n' + ids.map((id) => '  ' + id + ':' + p.id).join('\n'));
+    const list = await fetchProviderModels(p.base_url, p.api_key);
+    if (!list || !list.length) continue; // skip provider mati
+    const lines = list.map((m) => '  ' + m.disp + ':' + p.id);
+    let buf = '\u{1f50c} ' + (p.label || p.id) + ' (' + p.id + ') — ' + list.length + ' model\n';
+    for (const line of lines) {
+      if (buf.length + line.length + 1 > LIMIT) {
+        chunks.push(buf.trimEnd());
+        buf = '\u{1f50c} ' + (p.label || p.id) + ' (' + p.id + ') lanjutan\n';
+      }
+      buf += line + '\n';
     }
+    if (buf.trim()) chunks.push(buf.trimEnd());
   }
-  return blocks.join('\n\n') || '(tidak ada model yang dapat dimuat)';
+  if (!chunks.length) chunks.push('(tidak ada provider yang berhasil memuat daftar model)');
+  return chunks;
+}
+
+/**
+ * Kirim daftar model sebagai beberapa pesan (satu per provider / chunk).
+ */
+async function sendModelList(env, chatId, header) {
+  const chunks = await buildModelChunks(env);
+  await sendTelegram(env.TELEGRAM_TOKEN, chatId, header + '\n\n' + chunks[0]);
+  for (let i = 1; i < chunks.length; i++) {
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, '(' + (i + 1) + '/' + chunks.length + ')\n' + chunks[i]);
+  }
 }
 
 // --- Memori chat per room ---
