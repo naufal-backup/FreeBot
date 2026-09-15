@@ -40,7 +40,7 @@ function parseNaturalTime(text) {
   const wibNow = new Date(now + wibOff);
   let target = new Date(wibNow);
 
-  const rel = norm.match(/(?:dalam|in|after)\s+(\d+)\s*(menit|minute|min|m|jam|hour|h|hari|day|d)\b/);
+  const rel = norm.match(/(?:(?:dalam|in|after)\s+)?(\d+)\s*(menit|min(?:ute)?s?|mins?|m|jam|hours?|hour|h|hari|days?|day|d)\s*(lagi|)$/);
   if (rel) {
     const n = parseInt(rel[1], 10);
     const u = rel[2];
@@ -78,16 +78,18 @@ function parseNaturalTime(text) {
  * Eksekusi cron tasks dan reminder yang jatuh tempo. Panggil dari scheduled().
  */
 async function runScheduledTasks(env, ctx) {
-  if (!env.DB) return;
+  if (!env.DB) { console.error('runScheduledTasks: no DB'); return; }
   const now = Date.now();
   const wib = new Date(now + 7 * 3600000);
   const hhmm = String(wib.getUTCHours()).padStart(2,'0') + ':' + String(wib.getUTCMinutes()).padStart(2,'0');
   const today = wib.toISOString().slice(0,10);
+  console.log('scheduled tick: ' + hhmm + ' WIB');
   try {
     const tasks = await env.DB.prepare('SELECT id,chat_id,task_text FROM tasks WHERE active=1 AND cron_time=?').bind(hhmm).all();
+    console.log('cron tasks found: ' + ((tasks.results || []).length));
     for (const t of (tasks.results || [])) {
       const r = await env.DB.prepare('SELECT last_run FROM tasks WHERE id=?').bind(t.id).first();
-      if (r?.last_run && r.last_run.slice(0,10) === today) continue;
+      if (r?.last_run && r.last_run.slice(0,10) === today) { console.log('cron ' + t.id + ' already ran today'); continue; }
       try {
         const { base_url, api_key } = await getActiveApi(env, null);
         const m = env.AI_MODEL || 'deepseek-v4-flash';
@@ -97,18 +99,26 @@ async function runScheduledTasks(env, ctx) {
         });
         const d = await ai.json();
         const reply = (d?.choices?.[0]?.message?.content || '').trim().slice(0,1000);
-        await sendTelegram(env.TELEGRAM_TOKEN, t.chat_id, reply);
+        await sendTelegram(env.TELEGRAM_TOKEN, t.chat_id, '⏰ **Cron ' + t.cron_time + '**: ' + reply);
         await env.DB.prepare('UPDATE tasks SET last_run=? WHERE id=?').bind(new Date().toISOString(), t.id).run();
-      } catch(e) { console.error('cron:', e.message); }
+        console.log('cron ' + t.id + ' executed');
+      } catch(e) { console.error('cron task error:', e.message); }
     }
-  } catch(e) { console.error('cron q:', e.message); }
+  } catch(e) { console.error('cron query error:', e.message); }
   try {
-    const rems = await env.DB.prepare('SELECT id,chat_id,message FROM pending_reminders WHERE done=0 AND remind_at<='+now).all();
+    const rems = await env.DB.prepare('SELECT id,chat_id,message FROM pending_reminders WHERE done=0 AND remind_at<=?').bind(now).all();
+    console.log('pending reminders due: ' + ((rems.results || []).length));
     for (const r of (rems.results || [])) {
-      await sendTelegram(env.TELEGRAM_TOKEN, r.chat_id, 'Pengingat: ' + r.message);
+      await sendTelegram(env.TELEGRAM_TOKEN, r.chat_id, '🔔 **Pengingat:** ' + r.message);
       await env.DB.prepare('UPDATE pending_reminders SET done=1 WHERE id=?').bind(r.id).run();
+      console.log('reminder ' + r.id + ' sent');
     }
-  } catch(e) { console.error('rem:', e.message); }
+    } catch(e) { console.error('reminder error:', e.message); }
+  // Cleanup processed_updates > 7 hari (jaga D1 storage)
+  try {
+    await env.DB.prepare('DELETE FROM processed_updates WHERE created_at < ?')
+      .bind(Date.now() - 7 * 86400000).run();
+  } catch(e) { console.error('cleanup processed_updates:', e.message); }
 }
 
 export default {
@@ -164,6 +174,18 @@ export default {
     // ketik manual pakai hyphen (/login-gh). Keduanya diterima.
     const cmdWord = userText.split(/\s+/)[0].replace(/_/g, '-');
     const cmdArg = userText.includes(' ') ? userText.slice(userText.indexOf(' ') + 1).trim() : '';
+
+    // 0. Perintah super-admin /stop — tidak antre, selalu diproses langsung
+    if (cmdWord === '/stop') {
+      // Hapus "Typing..." jika ada, hentikan semua proses, kembalikan 200
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/deleteMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+      }).catch(() => {});
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, '🛑 Semua proses dihentikan.');
+      return new Response('OK', { status: 200 });
+    }
 
     // Public helper: /myid selalu dibalas agar owner bisa tahu ID-nya
     // tanpa perlu @userinfobot. Aman: hanya membalas ID milik pengirim sendiri.
@@ -243,7 +265,8 @@ export default {
       if (env.DB) {
         await env.DB.prepare('DELETE FROM chat_memory WHERE chat_id = ?').bind(String(chatId)).run();
       }
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Memori chat sesi ini dihapus. Konteks sebelumnya tidak lagi diingat.');
+      // Hanya hapus memori D1 — skip deleteMessages untuk menghindari timeout/error
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, '✅ Memori chat dihapus.');
       return new Response('OK', { status: 200 });
     }
 
@@ -683,6 +706,29 @@ chatId,
       return new Response('OK', { status: 200 });
     }
 
+    if (cmdWord === '/crons') {
+      if (!env.DB) { await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 tidak tersedia.'); return new Response('OK', { status: 200 }); }
+      const rows = await env.DB.prepare('SELECT id,cron_time,task_text,last_run,active FROM tasks WHERE owner_id=? AND type=? ORDER BY cron_time')
+        .bind(String(fromId), 'cron').all();
+      const list = (rows.results || []).map((t) =>
+        '#' + t.id + ' **' + t.cron_time + '** ' + (t.active ? '✅' : '⛔') + ' ' + t.task_text +
+        (t.last_run ? '\n   Terakhir: ' + t.last_run.slice(0,16) : '')
+      ).join('\n\n');
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, list ? '**Cron tugas:**\n\n' + list + '\n\nHapus: /delcron <id>' : 'Belum ada cron. Buat: /cron HH:MM tugas');
+      return new Response('OK', { status: 200 });
+    }
+
+    if (cmdWord === '/delcron') {
+      const id = parseInt(cmdArg.split(/\s+/)[0], 10);
+      if (!id || !env.DB) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Format: /delcron <id>\nLihat ID via /crons');
+        return new Response('OK', { status: 200 });
+      }
+      await env.DB.prepare('DELETE FROM tasks WHERE id=? AND owner_id=?').bind(id, String(fromId)).run();
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Cron #' + id + ' dihapus.');
+      return new Response('OK', { status: 200 });
+    }
+
     if (cmdWord === '/remind') {
       const m = cmdArg.match(/^(.+?)\s+(.+)$/);
       if (!m) {
@@ -699,6 +745,20 @@ chatId,
         .bind(String(fromId), String(chatId), remindAt, m[2], Date.now()).run();
       const wib = new Date(remindAt + 7 * 3600000);
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'Pengingat: ' + wib.toISOString().replace('T',' ').slice(0,16) + ' WIB — ' + m[2]);
+      return new Response('OK', { status: 200 });
+    }
+
+    if (cmdWord === '/reminds') {
+      if (!env.DB) { await sendTelegram(env.TELEGRAM_TOKEN, chatId, 'D1 tidak tersedia.'); return new Response('OK', { status: 200 }); }
+      const rows = await env.DB.prepare('SELECT id,remind_at,message,done FROM pending_reminders WHERE owner_id=? ORDER BY remind_at')
+        .bind(String(fromId)).all();
+      const now = Date.now();
+      const list = (rows.results || []).map((r) =>
+        (r.done ? '✅' : '⏳') + ' #' + r.id + ' ' + new Date(r.remind_at + 7 * 3600000).toISOString().replace('T',' ').slice(0,16) + ' WIB'
+        + (r.done ? ' (selesai)' : r.remind_at < now ? ' (terlewat)' : '')
+        + '\n   ' + r.message
+      ).join('\n\n');
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, list ? '**Pengingat:**\n\n' + list : 'Belum ada pengingat.');
       return new Response('OK', { status: 200 });
     }
 
@@ -763,8 +823,9 @@ chatId,
       const EXTERNAL_API_URL = `${base_url}/chat/completions`;
       const AI_MODEL = activeModelForId;
 
-      // Kirim pesan "Typing..." sebagai indikator visual, lalu hapus saat selesai
+      // Kirim pesan "Typing..." & auto-stop setelah 30 detik via setTimeout
       let typingMessageId = null;
+      let typingTimer = null;
       try {
         const typingRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
           method: 'POST',
@@ -773,6 +834,18 @@ chatId,
         });
         const typingData = await typingRes.json();
         typingMessageId = typingData?.result?.message_id || null;
+        // Auto-stop: hapus "Typing..." setelah 30 detik jika belum dihapus
+        if (typingMessageId) {
+          typingTimer = setTimeout(async () => {
+            try {
+              await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/deleteMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, message_id: typingMessageId }),
+              });
+            } catch {}
+          }, 30000);
+        }
       } catch {} // best-effort
 
       let history = await getChatMemory(env, chatId);
@@ -885,6 +958,8 @@ const messages = [
 
       if (!finalContent) finalContent = 'Maaf, terlalu banyak iterasi tool. Coba jelaskan lebih spesifik.';
 
+      // Matikan timer auto-stop karena balasan sudah siap
+      if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
       // Hapus pesan "Typing..." sebelum kirim balasan
       if (typingMessageId) {
         try {
@@ -1165,6 +1240,58 @@ const TOOL_DEFINITIONS = [
           content: { type: 'string', description: 'Isi file' },
         },
         required: ['name', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cron_list',
+      description: 'Tampilkan semua tugas cron yang sudah dijadwalkan untuk user ini.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cron_create',
+      description: 'Buat tugas cron harian baru. Panggil saat user minta "jadwalkan cron", "buat cron", "tugas harian".',
+      parameters: {
+        type: 'object',
+        properties: {
+          time: { type: 'string', description: 'Waktu dalam format HH:MM (24 jam WIB)' },
+          task: { type: 'string', description: 'Pesan/tugas yang akan dijalankan AI setiap hari' },
+        },
+        required: ['time', 'task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cron_delete',
+      description: 'Hapus tugas cron berdasarkan ID. Panggil saat user minta "hapus cron", "batalkan cron". TANYAKAN ID dulu ke user.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'number', description: 'ID cron dari daftar /crons' },
+        },
+        required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reminder_set',
+      description: 'Buat pengingat satu kali. Panggil saat user minta "ingatkan", "remind", "pengingat".',
+      parameters: {
+        type: 'object',
+        properties: {
+          waktu: { type: 'string', description: 'Waktu natural: "in 45 minutes", "besok jam 8 pagi", "next tuesday at 3 pm"' },
+          pesan: { type: 'string', description: 'Pesan pengingat' },
+        },
+        required: ['waktu', 'pesan'],
       },
     },
   },
@@ -1504,6 +1631,50 @@ async function executeTool(toolCall, env, chatId, fromId) {
         const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, content);
         if (!result.ok) return `❌ Gagal mengirim file: ${result.error}`;
         return `✅ File **${fileName}** berhasil dikirim. Silakan cek chat untuk mendownload.`;
+      }
+
+
+      case 'cron_list': {
+        if (!env.DB) return 'D1 tidak tersedia.';
+        const rows = await env.DB.prepare('SELECT id,cron_time,task_text,last_run,active FROM tasks WHERE owner_id=? AND type=? ORDER BY cron_time')
+          .bind(String(fromId), 'cron').all();
+        const list = (rows.results || []).map((t) =>
+          '#' + t.id + ' ' + t.cron_time + ' ' + (t.active ? '[Aktif]' : '[Nonaktif]') + ' ' + t.task_text +
+          (t.last_run ? ' (terakhir: ' + t.last_run.slice(0,10) + ')' : ' (belum jalan)')
+        ).join('\n');
+        return list ? list : 'Belum ada cron.';
+      }
+
+      case 'cron_create': {
+        const time = args.time;
+        const task = args.task;
+        if (!time || !/^\d{1,2}[:.]\d{2}$/.test(time)) return 'Format waktu: HH:MM';
+        if (!task || task.length < 3) return 'Tugas terlalu pendek.';
+        if (!env.DB) return 'D1 tidak tersedia.';
+        const cronTime = time.replace('.', ':');
+        await env.DB.prepare('INSERT INTO tasks (owner_id,chat_id,type,cron_time,task_text,active,created_at) VALUES (?,?,?,?,?,1,?)')
+          .bind(String(fromId), String(chatId), 'cron', cronTime, task, Date.now()).run();
+        return 'Cron dijadwalkan tiap ' + cronTime + ' WIB: ' + task;
+      }
+
+      case 'cron_delete': {
+        const id = args.id;
+        if (!id || !env.DB) return 'ID cron diperlukan.';
+        await env.DB.prepare('DELETE FROM tasks WHERE id=? AND owner_id=?').bind(id, String(fromId)).run();
+        return 'Cron #' + id + ' dihapus.';
+      }
+
+      case 'reminder_set': {
+        const waktu = args.waktu;
+        const pesan = args.pesan;
+        if (!waktu || !pesan) return 'Waktu dan pesan diperlukan.';
+        if (!env.DB) return 'D1 tidak tersedia.';
+        const remindAt = parseNaturalTime(waktu);
+        if (!remindAt) return 'Waktu tidak dikenali. Contoh: "in 45 min", "besok jam 8 pagi"';
+        await env.DB.prepare('INSERT INTO pending_reminders (owner_id,chat_id,remind_at,message,created_at) VALUES (?,?,?,?,?)')
+          .bind(String(fromId), String(chatId), remindAt, pesan, Date.now()).run();
+        const wib = new Date(remindAt + 7 * 3600000);
+        return 'Pengingat: ' + wib.toISOString().replace('T',' ').slice(0,16) + ' WIB — ' + pesan;
       }
 
       case 'webfetch': {
@@ -1948,7 +2119,7 @@ async function createGithubRepo(pat, name) {
       name,
       description: 'Generated by telegram-ai-bot',
       private: true,
-      auto_init: false,
+      auto_init: true,
       has_wiki: false,
     }),
   });
@@ -2023,12 +2194,15 @@ async function commitToRepo(pat, fullName, message, files, branch = 'main') {
   };
   const base = `https://api.github.com/repos/${fullName}`;
 
-  // 1. Dapatkan SHA commit terbaru di branch
+  // 1. Dapatkan SHA commit terbaru di branch (fallback: jika belum ada, buat ref baru)
   const refRes = await fetch(`${base}/git/refs/heads/${branch}`, { headers });
-  const refData = await refRes.json();
-  if (!refRes.ok) throw new Error(refData?.message || 'gagal ambil branch ref');
-  const parentSha = refData?.object?.sha;
-  if (!parentSha) throw new Error('branch tidak punya commit');
+  let parentSha = '';
+  let treeBase = null;
+  if (refRes.ok) {
+    const refData = await refRes.json();
+    parentSha = refData?.object?.sha || '';
+    treeBase = refData?.object?.tree_sha || null;
+  }
 
   // 2. Buat blobs untuk setiap file
   const blobs = [];
@@ -2043,23 +2217,24 @@ async function commitToRepo(pat, fullName, message, files, branch = 'main') {
     blobs.push({ path: f.path, mode: '100644', type: 'blob', sha: b.sha });
   }
 
-  // 3. Buat tree baru dengan parent
+  // 3. Buat tree (pakai base_tree jika repo sudah punya isi)
+  const treeBody = treeBase ? { tree: blobs, base_tree: treeBase } : { tree: blobs };
   const treeRes = await fetch(`${base}/git/trees`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ tree: blobs, base_tree: refData?.object?.tree_sha }), // gunakan tree asli untuk merge
+    body: JSON.stringify(treeBody),
   });
   const tree = await treeRes.json();
   if (!treeRes.ok) throw new Error(tree?.message || 'git tree error');
 
-  // 4. Buat commit dengan parent
+  // 4. Buat commit (tanpa parents jika repo kosong)
   const commitRes = await fetch(`${base}/git/commits`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       message,
       tree: tree.sha,
-      parents: [parentSha],
+      parents: parentSha ? [parentSha] : [],
     }),
   });
   const commit = await commitRes.json();
