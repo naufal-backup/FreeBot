@@ -340,6 +340,15 @@ export async function extractPdfText(data) {
   return combined || "";
 }
 
+function isGarbledText(text) {
+  if (!text || text.length < 50) return true;
+  const words = text.split(/\s+/);
+  if (words.length < 10) return false;
+  const singleAlpha = words.filter(w => w.length === 1 && /[a-zA-Z]/.test(w)).length;
+  const ratio = singleAlpha / words.length;
+  return ratio > 0.3;
+}
+
 function isPdfImageBased(data) {
   const decoder = new TextDecoder("utf-8");
   const raw = decoder.decode(data);
@@ -497,8 +506,9 @@ async function localExtract(bytes, fileName, mimeHint, env) {
   if (sig.startsWith("%PDF") || (isPdf && !isDocx)) {
     console.log("[LOCAL] Extracting PDF...");
     let text = await extractPdfText(bytes);
-    console.log("[LOCAL] PDF text:", text.length, "chars, imageBased:", isPdfImageBased(bytes));
-    if (!text || text.length < 50 || isPdfImageBased(bytes)) {
+    const garbled = isGarbledText(text);
+    console.log("[LOCAL] PDF text:", text.length, "chars, garbled:", garbled, "imageBased:", isPdfImageBased(bytes));
+    if (!text || text.length < 50 || garbled || isPdfImageBased(bytes)) {
       console.log("[LOCAL] Trying OCR fallback...");
       const ocrText = await ocrDocument(env, bytes, "application/pdf", fileName);
       console.log("[LOCAL] OCR result:", ocrText ? ocrText.length : 0, "chars");
