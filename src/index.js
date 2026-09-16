@@ -75,6 +75,16 @@ export default {
       return new Response("OK", { status: 200 });
     }
 
+    // --- /docplain: extract PDF to .md BEFORE document ingestion overwrites userText ---
+    const cmdWord = (userText.split(/\s+/)[0] || "").replace(/_/g, "-");
+    if (cmdWord === "/docplain" && docInfo && /\.pdf$/i.test(docInfo.file_name || "")) {
+      const handler = (await import("./commands/docplain.js")).handleDocplainCommand;
+      return enqueueChatTask(chatId, async () => {
+        const handled = await handler(cmdWord, "", env, chatId, fromId, messageId, docInfo);
+        return new Response("OK", { status: 200 });
+      });
+    }
+
     // --- Document ingestion (PDF/DOCX/HTML/TXT/MD/IMAGE) -----------------
     if (docInfo) {
       const fileName = docInfo.file_name || "";
@@ -146,7 +156,6 @@ export default {
       return new Response("OK", { status: 200 });
     }
 
-    const cmdWord = userText.split(/\s+/)[0].replace(/_/g, "-");
     const cmdArg = userText.includes(" ") ? userText.slice(userText.indexOf(" ") + 1).trim() : "";
 
     // --- Commands available to everyone (even before the allow-list) ------
