@@ -80,38 +80,39 @@ async function extractCMapsFromPdf(data) {
   const decoder = new TextDecoder("utf-8");
   const merged = new Map();
   const streamMarker = new Uint8Array([115, 116, 114, 97, 101, 109]);
-  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]);
 
   let pos = 0;
   while (pos < data.length) {
     const streamIdx = findBytes(data, streamMarker, pos);
     if (streamIdx === -1) break;
-    const endIdx = findBytes(data, endstreamMarker, streamIdx + 6);
-    if (endIdx === -1) break;
 
-    const dictStart = Math.max(0, streamIdx - 2000);
+    const dictStart = Math.max(0, streamIdx - 3000);
     const dictSlice = decoder.decode(data.slice(dictStart, streamIdx));
+
+    // Check for /Length in dictionary
+    const lengthMatch = dictSlice.match(/\/Length\s+(\d+)/);
+    if (!lengthMatch) { pos = streamIdx + 6; continue; }
+
+    const isFlate = dictSlice.includes("FlateDecode");
+    if (!isFlate) { pos = streamIdx + 6; continue; }
 
     let dataStart = streamIdx + 6;
     if (data[dataStart] === 13) dataStart++;
     if (data[dataStart] === 10) dataStart++;
-    let dataEnd = endIdx;
-    while (dataEnd > dataStart && (data[dataEnd - 1] === 10 || data[dataEnd - 1] === 13)) dataEnd--;
 
-    const streamBytes = data.slice(dataStart, dataEnd);
+    const streamLen = parseInt(lengthMatch[1]);
+    const streamBytes = data.slice(dataStart, dataStart + streamLen);
 
-    if (dictSlice.includes("FlateDecode")) {
-      const decompressed = await decompressFlate(streamBytes);
-      if (decompressed) {
-        const streamText = decoder.decode(decompressed);
-        if (streamText.includes("beginbfchar") || streamText.includes("beginbfrange")) {
-          const cmap = parseCMap(streamText);
-          for (const [k, v] of cmap) merged.set(k, v);
-        }
+    const decompressed = await decompressFlate(streamBytes);
+    if (decompressed) {
+      const streamText = decoder.decode(decompressed);
+      if (streamText.includes("beginbfchar") || streamText.includes("beginbfrange")) {
+        const cmap = parseCMap(streamText);
+        for (const [k, v] of cmap) merged.set(k, v);
       }
     }
 
-    pos = endIdx + 9;
+    pos = dataStart + streamLen;
   }
 
   return merged;
@@ -202,10 +203,8 @@ export async function extractPdfText(data) {
   // Step 0: extract CMap
   const cmap = await extractCMapsFromPdf(data);
 
-  // Step 1: find compressed streams, decompress, extract
+  // Step 1: find streams, decompress using /Length, extract text
   const streamMarker = new Uint8Array([115, 116, 114, 101, 97, 109]);
-  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]);
-  const flateFilter = "FlateDecode";
 
   let pos = 0;
   const allResults = [];
@@ -214,22 +213,21 @@ export async function extractPdfText(data) {
     const streamIdx = findBytes(data, streamMarker, pos);
     if (streamIdx === -1) break;
 
-    const endIdx = findBytes(data, endstreamMarker, streamIdx + 6);
-    if (endIdx === -1) break;
-
-    const dictSearchStart = Math.max(0, streamIdx - 2000);
+    const dictSearchStart = Math.max(0, streamIdx - 3000);
     const dictSlice = decoder.decode(data.slice(dictSearchStart, streamIdx));
+
+    // Use /Length from dictionary, not endstream position
+    const lengthMatch = dictSlice.match(/\/Length\s+(\d+)/);
+    if (!lengthMatch) { pos = streamIdx + 6; continue; }
 
     let dataStart = streamIdx + 6;
     if (data[dataStart] === 13) dataStart++;
     if (data[dataStart] === 10) dataStart++;
 
-    let dataEnd = endIdx;
-    while (dataEnd > dataStart && (data[dataEnd - 1] === 10 || data[dataEnd - 1] === 13)) dataEnd--;
+    const streamLen = parseInt(lengthMatch[1]);
+    const streamBytes = data.slice(dataStart, dataStart + streamLen);
 
-    const streamBytes = data.slice(dataStart, dataEnd);
-
-    if (dictSlice.includes(flateFilter)) {
+    if (dictSlice.includes("FlateDecode")) {
       const decompressed = await decompressFlate(streamBytes);
 
       if (decompressed) {
@@ -264,7 +262,7 @@ export async function extractPdfText(data) {
       }
     }
 
-    pos = endIdx + 9;
+    pos = dataStart + streamLen;
   }
 
   return allResults.join("\n").trim() || "";

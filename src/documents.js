@@ -92,40 +92,36 @@ async function extractCMapsFromPdf(data) {
   const decoder = new TextDecoder("utf-8");
   const merged = new Map();
   const streamMarker = new Uint8Array([115, 116, 114, 97, 101, 109]); // "stream"
-  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]); // "endstream"
 
   let pos = 0;
   while (pos < data.length) {
     const streamIdx = findBytes(data, streamMarker, pos);
     if (streamIdx === -1) break;
-    const endIdx = findBytes(data, endstreamMarker, streamIdx + 6);
-    if (endIdx === -1) break;
 
-    const dictStart = Math.max(0, streamIdx - 2000);
+    const dictStart = Math.max(0, streamIdx - 3000);
     const dictSlice = decoder.decode(data.slice(dictStart, streamIdx));
+
+    const lengthMatch = dictSlice.match(/\/Length\s+(\d+)/);
+    if (!lengthMatch) { pos = streamIdx + 6; continue; }
+    if (!dictSlice.includes("FlateDecode")) { pos = streamIdx + 6; continue; }
 
     let dataStart = streamIdx + 6;
     if (data[dataStart] === 13) dataStart++;
     if (data[dataStart] === 10) dataStart++;
-    let dataEnd = endIdx;
-    while (dataEnd > dataStart && (data[dataEnd - 1] === 10 || data[dataEnd - 1] === 13)) dataEnd--;
 
-    const streamBytes = data.slice(dataStart, dataEnd);
+    const streamLen = parseInt(lengthMatch[1]);
+    const streamBytes = data.slice(dataStart, dataStart + streamLen);
 
-    // Try decompressing ALL FlateDecode streams and check for CMap content
-    if (dictSlice.includes("FlateDecode")) {
-      const decompressed = await decompressFlate(streamBytes);
-      if (decompressed) {
-        const streamText = decoder.decode(decompressed);
-        if (streamText.includes("beginbfchar") || streamText.includes("beginbfrange")) {
-          const cmap = parseCMap(streamText);
-          console.log("[CMap] Found CMap stream with", cmap.size, "entries");
-          for (const [k, v] of cmap) merged.set(k, v);
-        }
+    const decompressed = await decompressFlate(streamBytes);
+    if (decompressed) {
+      const streamText = decoder.decode(decompressed);
+      if (streamText.includes("beginbfchar") || streamText.includes("beginbfrange")) {
+        const cmap = parseCMap(streamText);
+        for (const [k, v] of cmap) merged.set(k, v);
       }
     }
 
-    pos = endIdx + 9;
+    pos = dataStart + streamLen;
   }
 
   return merged;
@@ -222,100 +218,62 @@ function extractTextFromRaw(raw, cmap) {
 
 export async function extractPdfText(data) {
   const decoder = new TextDecoder("utf-8");
-  const raw = decoder.decode(data);
-  const debug = [];
 
-  debug.push("[PDF EXTRACT LOG]");
-  debug.push("Size: " + data.length + " bytes");
-
-  // Step 0: extract CMap (character code → Unicode mapping)
+  // Step 0: extract CMap
   const cmap = await extractCMapsFromPdf(data);
-  debug.push("CMap entries: " + cmap.size);
 
-  // Step 1: skip raw regex — raw PDF bytes are not valid text
-  // Only extract from properly decompressed streams
-
-  // Step 2: find compressed streams, decompress, extract
+  // Step 1: find streams, decompress using /Length, extract text
   const streamMarker = new Uint8Array([115, 116, 114, 101, 97, 109]); // "stream"
-  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]); // "endstream"
-  const flateFilter = "FlateDecode";
 
   let pos = 0;
   const allResults = [];
-  let streamCount = 0;
-  let flateCount = 0;
-  let decompressOk = 0;
 
   while (pos < data.length) {
     const streamIdx = findBytes(data, streamMarker, pos);
     if (streamIdx === -1) break;
 
-    const endIdx = findBytes(data, endstreamMarker, streamIdx + 6);
-    if (endIdx === -1) break;
-
-    streamCount++;
-
-    // Check dictionary before stream for FlateDecode
-    const dictSearchStart = Math.max(0, streamIdx - 2000);
+    const dictSearchStart = Math.max(0, streamIdx - 3000);
     const dictSlice = decoder.decode(data.slice(dictSearchStart, streamIdx));
 
-    // Extract stream data bytes
+    // Use /Length from dictionary, not endstream position
+    const lengthMatch = dictSlice.match(/\/Length\s+(\d+)/);
+    if (!lengthMatch) { pos = streamIdx + 6; continue; }
+
     let dataStart = streamIdx + 6;
-    if (data[dataStart] === 13) dataStart++; // skip \r
-    if (data[dataStart] === 10) dataStart++; // skip \n
+    if (data[dataStart] === 13) dataStart++;
+    if (data[dataStart] === 10) dataStart++;
 
-    let dataEnd = endIdx;
-    while (dataEnd > dataStart && (data[dataEnd - 1] === 10 || data[dataEnd - 1] === 13)) dataEnd--;
+    const streamLen = parseInt(lengthMatch[1]);
+    const streamBytes = data.slice(dataStart, dataStart + streamLen);
 
-    const streamBytes = data.slice(dataStart, dataEnd);
-
-    if (dictSlice.includes(flateFilter)) {
-      flateCount++;
+    if (dictSlice.includes("FlateDecode")) {
       const decompressed = await decompressFlate(streamBytes);
 
       if (decompressed) {
-        decompressOk++;
         const decompRaw = decoder.decode(decompressed);
-        const hasBT = decompRaw.includes("BT");
-        const hasET = decompRaw.includes("ET");
-        const hasTj = decompRaw.includes("Tj");
-        const hasTJ = decompRaw.includes("TJ");
-        debug.push("S" + decompressOk + ": " + decompRaw.length + "ch BT:" + hasBT + " ET:" + hasET + " Tj:" + hasTj + " TJ:" + hasTJ);
-        if (decompRaw.length < 300) debug.push("  content: " + decompRaw.slice(0, 200));
 
-        // Only extract from decompressed content that looks like PDF operators
-        if (hasBT && hasET) {
+        if (decompRaw.includes("BT") && decompRaw.includes("ET")) {
           const decompText = extractTextFromRaw(decompRaw, cmap);
-          if (decompText && decompText.length > 10) {
-            allResults.push(decompText);
-            debug.push("  extracted: " + decompText.length + " chars");
-          }
+          if (decompText && decompText.length > 10) allResults.push(decompText);
         }
 
-        // Also try BT...ET blocks in decompressed data
+        // BT...ET blocks
         const btRe = /BT\s*([\s\S]*?)\s*ET/g;
         let bm;
-        let btCount = 0;
         while ((bm = btRe.exec(decompRaw)) !== null) {
-          btCount++;
           const lines = bm[1].match(/\(([^)]*)\)/g);
           if (lines) {
             const btText = lines.map(l => l.slice(1, -1)).join(" ").trim();
             if (btText && btText.length > 5) allResults.push(btText);
           }
-          // Also try hex in BT blocks
           const hexRe = /<([0-9A-Fa-f]+)>/g;
           let hm;
           while ((hm = hexRe.exec(bm[1])) !== null) {
             if (hm[1].length >= 4) allResults.push(hexToUnicode(hm[1], cmap));
           }
         }
-        debug.push("  BT blocks: " + btCount);
-      } else {
-        debug.push("S" + flateCount + ": DECOMP FAIL size=" + streamBytes.length);
       }
     } else if (!dictSlice.includes("DCTDecode") && !dictSlice.includes("JPXDecode")) {
-      // Try raw text extraction for non-compressed, non-image streams
       const rawText = decoder.decode(streamBytes);
       if (rawText.includes("BT") && rawText.includes("ET")) {
         const text = extractTextFromRaw(rawText, cmap);
@@ -323,17 +281,11 @@ export async function extractPdfText(data) {
       }
     }
 
-    pos = endIdx + 9;
+    pos = dataStart + streamLen;
   }
 
-  debug.push("Summary: streams=" + streamCount + " flate=" + flateCount + " decompressed=" + decompressOk + " results=" + allResults.length);
-
   const combined = allResults.join("\n").trim();
-  debug.push("Final text: " + combined.length + " chars");
-  if (combined.length > 0) debug.push("First 300: " + combined.slice(0, 300));
-  debug.push("[END LOG]");
-
-  return { text: combined || "", debug: debug.join("\n") };
+  return combined || "";
 }
 
 function isPdfImageBased(data) {
@@ -480,6 +432,7 @@ export async function extractDocumentText(env, fileId, fileName, mimeHint) {
       }
       const base64 = btoa(binary);
 
+      console.log("[DOC_TO_MD] Calling worker, file:", fileName, "size:", bytes.length);
       const resp = await env.DOC_TO_MD.fetch(new Request("https://doc-to-md.internal/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -491,6 +444,7 @@ export async function extractDocumentText(env, fileId, fileName, mimeHint) {
       }));
 
       const result = await resp.json();
+      console.log("[DOC_TO_MD] Result:", result.text?.length || 0, "chars, error:", result.error);
       if (result.text) return result.text;
       if (result.error) throw new Error(result.error);
     } catch (err) {
