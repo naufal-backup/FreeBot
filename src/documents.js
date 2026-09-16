@@ -1,37 +1,121 @@
 // src/documents.js
 // Text extraction for PDF, DOCX, HTML, TXT, MD, and image files.
 // Includes OCR fallback for scanned documents and images.
+// Supports FlateDecode compressed PDF streams.
 
 import { ocrDocument } from "./ocr.js";
 
-export function extractPdfText(data) {
-  const decoder = new TextDecoder("utf-8");
-  const raw = decoder.decode(data);
-  raw.replace(/\/[A-Za-z]+\s*<<[\s\S]*?>>/g, "").replace(/\/Filter\s*\/[A-Za-z0-9]+/g, "");
+function findBytes(data, needle, start = 0) {
+  for (let i = start; i <= data.length - needle.length; i++) {
+    let found = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (data[i + j] !== needle[j]) { found = false; break; }
+    }
+    if (found) return i;
+  }
+  return -1;
+}
 
+async function decompressFlate(data) {
+  for (const mode of ["deflate", "raw"]) {
+    try {
+      const ds = new DecompressionStream(mode);
+      const writer = ds.writable.getWriter();
+      writer.write(data);
+      writer.close();
+      const reader = ds.readable.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const total = chunks.reduce((a, c) => a + c.length, 0);
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) { out.set(c, off); off += c.length; }
+      return out;
+    } catch { /* try next mode */ }
+  }
+  return null;
+}
+
+function extractTextFromRaw(raw) {
   const results = [];
   let m;
-
   const tjRe = /\(([^)]*)\)\s*Tj/g;
   while ((m = tjRe.exec(raw)) !== null) results.push(m[1]);
-
   const tjArrRe = /\[([^\]]*)\]\s*TJ/g;
   while ((m = tjArrRe.exec(raw)) !== null) {
     const inner = m[1].match(/\(([^)]*)\)/g);
     if (inner) for (const i of inner) results.push(i.slice(1, -1));
   }
+  return results.join(" ").trim();
+}
 
-  const text = results.join(" ").trim();
-  if (text) return text;
+export async function extractPdfText(data) {
+  const decoder = new TextDecoder("utf-8");
+  const raw = decoder.decode(data);
 
-  const btRe = /BT\s*([\s\S]*?)\s*ET/g;
-  const btResults = [];
-  while ((m = btRe.exec(raw)) !== null) {
-    const lines = m[1].match(/\(([^)]*)\)/g);
-    if (lines) for (const l of lines) btResults.push(l.slice(1, -1));
+  // Step 1: try simple regex on raw PDF (uncompressed streams)
+  let text = extractTextFromRaw(raw);
+  if (text && text.length > 50) return text;
+
+  // Step 2: find compressed streams, decompress, extract
+  const streamMarker = new Uint8Array([115, 116, 114, 101, 97, 109]); // "stream"
+  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]); // "endstream"
+  const flateFilter = "FlateDecode";
+
+  let pos = 0;
+  const allResults = [];
+
+  while (pos < data.length) {
+    const streamIdx = findBytes(data, streamMarker, pos);
+    if (streamIdx === -1) break;
+
+    const endIdx = findBytes(data, endstreamMarker, streamIdx + 6);
+    if (endIdx === -1) break;
+
+    // Check dictionary before stream for FlateDecode
+    const dictSearchStart = Math.max(0, streamIdx - 1000);
+    const dictSlice = decoder.decode(data.slice(dictSearchStart, streamIdx));
+
+    if (dictSlice.includes(flateFilter)) {
+      // Extract stream data bytes
+      let dataStart = streamIdx + 6;
+      if (data[dataStart] === 13) dataStart++; // skip \r
+      if (data[dataStart] === 10) dataStart++; // skip \n
+
+      let dataEnd = endIdx;
+      while (dataEnd > dataStart && (data[dataEnd - 1] === 10 || data[dataEnd - 1] === 13)) dataEnd--;
+
+      const streamBytes = data.slice(dataStart, dataEnd);
+      const decompressed = await decompressFlate(streamBytes);
+
+      if (decompressed) {
+        const decompRaw = decoder.decode(decompressed);
+        const decompText = extractTextFromRaw(decompRaw);
+        if (decompText) allResults.push(decompText);
+
+        // Also try BT...ET blocks in decompressed data
+        const btRe = /BT\s*([\s\S]*?)\s*ET/g;
+        let bm;
+        while ((bm = btRe.exec(decompRaw)) !== null) {
+          const lines = bm[1].match(/\(([^)]*)\)/g);
+          if (lines) {
+            const btText = lines.map(l => l.slice(1, -1)).join(" ").trim();
+            if (btText) allResults.push(btText);
+          }
+        }
+      }
+    }
+
+    pos = endIdx + 9;
   }
 
-  return btResults.join(" ").trim() || "";
+  const combined = allResults.join(" ").trim();
+  if (combined.length > text.length) return combined;
+  return text || "";
 }
 
 function isPdfImageBased(data) {
@@ -181,7 +265,7 @@ export async function extractDocumentText(env, fileId, fileName, mimeHint) {
 
   // PDF with OCR fallback
   if (sig.startsWith("%PDF") || (isPdf && !isDocx)) {
-    let text = extractPdfText(bytes);
+    let text = await extractPdfText(bytes);
     if (!text || text.length < 50 || isPdfImageBased(bytes)) {
       console.log("PDF scan detected, attempting OCR...");
       const ocrText = await ocrDocument(env, bytes, "application/pdf", fileName);
