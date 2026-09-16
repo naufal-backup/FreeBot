@@ -2,7 +2,7 @@
 // Manages active AI model per chat, provider configs, and the "active API"
 // (base_url + api_key) resolution used for every completion request.
 
-import { DEFAULT_API_BASE, FALLBACK_MODELS } from "./config.js";
+import { DEFAULT_API_BASE, FALLBACK_MODELS, ZEN_API_BASE } from "./config.js";
 import { maskApiKey } from "./utils/format.js";
 import { sendTelegram } from "./telegram.js";
 
@@ -167,6 +167,42 @@ export async function sendModelList(env, chatId, header) {
   for (let i = 1; i < chunks.length; i++) {
     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "(" + (i + 1) + "/" + chunks.length + ")\n" + chunks[i]);
   }
+}
+
+// Zen models that use /responses endpoint (OpenAI format)
+const ZEN_RESPONSES_MODELS = /^(gpt-|grok-|muse-spark)/;
+// Zen models that use /messages endpoint (Anthropic format)
+const ZEN_MESSAGES_MODELS = /^(claude-|qwen)/;
+// Zen models that use /chat/completions endpoint (OpenAI-compatible)
+const ZEN_CHAT_COMPLETIONS_MODELS = /^(deepseek-|minimax-|glm-|kimi-|mimo-|nemotron-|big-pickle|ling-)/;
+
+/**
+ * Resolve the correct API endpoint URL for a given model and provider.
+ * Zen uses different endpoints depending on the model type.
+ */
+export function resolveApiEndpoint(base_url, model, providerId) {
+  if (providerId !== "zen") {
+    return `${base_url}/chat/completions`;
+  }
+  const bareModel = (model || "").split(":")[0];
+  if (ZEN_RESPONSES_MODELS.test(bareModel)) {
+    return `${ZEN_API_BASE}/responses`;
+  }
+  if (ZEN_MESSAGES_MODELS.test(bareModel)) {
+    return `${ZEN_API_BASE}/messages`;
+  }
+  return `${ZEN_API_BASE}/chat/completions`;
+}
+
+/**
+ * Check if a model/provider combination uses Anthropic messages format.
+ */
+export function isAnthropicFormat(model, providerId) {
+  if (providerId === "zen") {
+    const bareModel = (model || "").split(":")[0];
+    return ZEN_MESSAGES_MODELS.test(bareModel);
+  }
+  return false;
 }
 
 export { maskApiKey };

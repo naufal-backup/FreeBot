@@ -7,7 +7,7 @@ import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote } from "./tele
 import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
-import { getActiveModel, getActiveApi } from "./models.js";
+import { getActiveModel, getActiveApi, resolveApiEndpoint, isAnthropicFormat } from "./models.js";
 import { getChatMemory, saveChatMemory, summarizeHistory, getCavemanMode } from "./storage.js";
 import { getAllToolDefinitions } from "./tools/definitions.js";
 import { executeTool } from "./tools/executor.js";
@@ -181,8 +181,10 @@ export default {
     let typingTimer = null;
     try {
       const { base_url, api_key } = await getActiveApi(env, chatId);
-      const EXTERNAL_API_URL = `${base_url}/chat/completions`;
+      const activeModelForId = await getActiveModel(env, chatId);
       const AI_MODEL = (activeModelForId || "").split(":")[0] || "deepseek-v4-flash";
+      const PROVIDER_ID = (activeModelForId || "").split(":")[1] || "";
+      const EXTERNAL_API_URL = resolveApiEndpoint(base_url, AI_MODEL, PROVIDER_ID);
 
       try {
         const typingRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
@@ -298,15 +300,29 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           clearTimeout(aiTimeout);
         }
 
-        if (!externalRes.ok) throw new Error(`AI API error: ${externalRes.status}`);
+        if (!externalRes.ok) {
+          const errBody = await externalRes.json().catch(() => ({}));
+          const errMsg = errBody?.error?.message || errBody?.message || `HTTP ${externalRes.status}`;
+          throw new Error(`AI API error: ${errMsg}`);
+        }
         const aiData = await externalRes.json();
+        // Handle both OpenAI format (choices[0]) and Anthropic format (content[0])
+        let finalMsg = null;
         const choice = aiData.choices?.[0];
-        if (!choice) throw new Error("AI response empty");
-        const message = choice.message;
+        if (choice?.message) {
+          finalMsg = choice.message;
+        } else if (aiData.content?.[0]?.text) {
+          // Anthropic messages format
+          finalMsg = { content: aiData.content[0].text };
+        }
+        if (!finalMsg) {
+          const resp = aiData?.error?.message || JSON.stringify(aiData).slice(0, 500);
+          throw new Error(`AI response empty. Detail: ${resp}`);
+        }
 
-        if (message.tool_calls?.length > 0) {
-          messages.push(message);
-          for (const tc of message.tool_calls) {
+        if (finalMsg.tool_calls?.length > 0) {
+          messages.push(finalMsg);
+          for (const tc of finalMsg.tool_calls) {
             const result = await executeTool(tc, env, chatId, fromId);
             messages.push({ role: "tool", tool_call_id: tc.id, content: result });
           }
@@ -314,7 +330,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           continue;
         }
 
-        finalContent = message.content || "Maaf, tidak ada respons.";
+        finalContent = finalMsg.content || "Maaf, tidak ada respons.";
         break;
       }
       if (!finalContent) finalContent = "Maaf, terlalu banyak iterasi tool. Coba jelaskan lebih spesifik.";
@@ -336,7 +352,8 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, typingMessageId);
       }
       try {
-        await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Sorry, something went wrong. Try again.");
+        const errMsg = err.message || "Unknown error";
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Error: ${errMsg.slice(0, 500)}`);
       } catch {
         // best effort
       }

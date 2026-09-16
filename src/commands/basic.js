@@ -92,15 +92,16 @@ export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, 
   if (cmdWord === "/zen") {
     const target = cmdArg.trim().toLowerCase();
     if (!target || target === "list") {
-      const freeModels = ZEN_MODELS.filter((m) => m.price === "FREE").map((m) => `  ${m.id} — ${m.name}`).join("\n");
-      const paidModels = ZEN_MODELS.filter((m) => m.price !== "FREE").map((m) => `  ${m.id} — ${m.name} (${m.price}/1M tok)`).join("\n");
-      const msg = `OpenCode Zen — Model AI terkurasi untuk coding.\n\nGratis:\n${freeModels}\n\nPremium (bayar per token):\n${paidModels}\n\nCara pakai:\n1. Buat akun + API key di opencode.ai/auth\n2. Atur key: /changekey <zen_api_key>\n3. Atur provider: /changeprovider https://opencode.ai/zen/v1\n4. Pilih model: /model deepseek-v4-flash:zen`;
+      const freeChat = ZEN_MODELS.filter((m) => m.price === "FREE" && !["muse-spark-1.3-contributor-free"].includes(m.id)).map((m) => `  ${m.id} — ${m.name}`).join("\n");
+      const freeOther = ZEN_MODELS.filter((m) => m.price === "FREE" && ["muse-spark-1.3-contributor-free"].includes(m.id)).map((m) => `  ${m.id} — ${m.name} (Responses API)`).join("\n");
+      const paidChat = ZEN_MODELS.filter((m) => m.price !== "FREE").map((m) => `  ${m.id} — ${m.name} (${m.price}/1M tok)`).join("\n");
+      const msg = `OpenCode Zen — Model AI terkurasi.\n\nGratis (Chat Completions - compatible):\n${freeChat}\n\nGratis (butuh endpoint lain, belum compatible):\n${freeOther}\n\nPremium (bayar per token):\n${paidChat}\n\nCara pakai:\n1. Buat akun + API key di opencode.ai/auth\n2. Atur key: /changekey <zen_api_key>\n3. Atur provider: /changeprovider https://opencode.ai/zen/v1\n4. Pilih model: /model deepseek-v4-flash:zen\n\nCatatan: Model gratis lainnya (MiMo, Nemotron, Big Pickle, Ling, DeepSeek Flash) sudah compatible.`;
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, msg);
       return true;
     }
     if (target === "free") {
-      const freeModels = ZEN_MODELS.filter((m) => m.price === "FREE").map((m) => `${m.id} — ${m.name}`).join("\n");
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model gratis Zen:\n${freeModels}\n\nPakai: /model <id_model>:zen`);
+      const freeModels = ZEN_MODELS.filter((m) => m.price === "FREE" && !["muse-spark-1.3-contributor-free"].includes(m.id)).map((m) => `${m.id} — ${m.name}`).join("\n");
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model gratis Zen (compatible):\n${freeModels}\n\nPakai: /model <id_model>:zen`);
       return true;
     }
     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /zen atau /zen list atau /zen free");
