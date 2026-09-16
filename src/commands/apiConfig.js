@@ -1,11 +1,11 @@
 // src/commands/apiConfig.js
-// /changeapi, /changeprovider, /changekey, /api-status, /resetapi,
+// /changeapi, /changekey, /api-status, /resetapi,
 // /addprovider, /delprovider, /providers
 
 import { sendTelegram, deleteTelegramMessage } from "../telegram.js";
 import { maskApiKey } from "../utils/format.js";
 import { DEFAULT_API_BASE } from "../config.js";
-import { getApiConfig, setApiConfig, setApiBase, setApiKey, clearApiConfig } from "../models.js";
+import { getApiConfig, setApiConfig, setApiKey, clearApiConfig } from "../models.js";
 
 export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, messageId) {
   if (cmdWord === "/changeapi") {
@@ -33,33 +33,6 @@ export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, me
     await setApiConfig(env, baseUrl, apiKey);
     await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, messageId);
     await sendTelegram(env.TELEGRAM_TOKEN, chatId, `API diganti ke: ${baseUrl}\n(Simpan, pesan key dihapus.)`);
-    return true;
-  }
-
-  if (cmdWord === "/changeprovider") {
-    const baseUrl = (cmdArg.trim() || "").replace(/\/+$/, "");
-    if (!/^https?:\/\//.test(baseUrl)) {
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /changeprovider <base_url>\nContoh: /changeprovider https://api.kelontongai.id/v1\n(Key tetap dipertahankan.)");
-      return true;
-    }
-    if (!env.DB) {
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "D1 tidak tersedia.");
-      return true;
-    }
-    const existing = await getApiConfig(env);
-    const apiKey = existing?.api_key || env.EXTERNAL_API_KEY || "";
-    try {
-      const testRes = await fetch(`${baseUrl}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
-      if (!testRes.ok) {
-        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Provider tidak valid (HTTP ${testRes.status}). Cek base_url & key aktif.`);
-        return true;
-      }
-    } catch (err) {
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Gagal koneksi ke provider: ${err.message}`);
-      return true;
-    }
-    await setApiBase(env, baseUrl);
-    await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Provider diganti ke: ${baseUrl}\nKey tetap: ${maskApiKey(apiKey)}`);
     return true;
   }
 
@@ -124,9 +97,9 @@ export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, me
     const id = (args[0] || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     const baseUrl = (args[1] || "").replace(/\/+$/, "");
     const apiKey = args[2] || "";
-    const label = args.slice(3).join(" ") || id;
+    const modelsStr = args.slice(3).join(" ") || "[]";
     if (!id || !baseUrl || !apiKey) {
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /addprovider <id> <base_url> <api_key> [label]");
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /addprovider <id> <base_url> <api_key> [models]\nContoh: /addprovider ag https://api.example.com/v1 sk-xxx model1,model2,model3");
       return true;
     }
     if (!/^https?:\/\//.test(baseUrl)) {
@@ -147,10 +120,18 @@ export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, me
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Gagal koneksi: " + err.message);
       return true;
     }
+    // Parse models: accept comma-separated or JSON array
+    let models = "[]";
+    if (modelsStr.startsWith("[")) {
+      models = modelsStr;
+    } else {
+      const arr = modelsStr.split(",").map((s) => s.trim()).filter(Boolean);
+      models = JSON.stringify(arr);
+    }
     await env.DB.prepare(
-      "INSERT OR REPLACE INTO provider_configs (id, base_url, api_key, label, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).bind(id, baseUrl, apiKey, label, Date.now(), Date.now()).run();
-    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "\u2705 Provider **" + label + "** (" + id + ") ditambahkan.");
+      "INSERT OR REPLACE INTO provider_configs (id, base_url, api_key, label, models, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).bind(id, baseUrl, apiKey, id, models, Date.now(), Date.now()).run();
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Provider " + id + " ditambahkan.\nGunakan /model <nama_model> untuk ganti model (otomatis pakai provider ini).");
     return true;
   }
 
@@ -174,12 +155,16 @@ export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, me
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, "D1 tidak tersedia.");
       return true;
     }
-    const rows = await env.DB.prepare("SELECT id, label, api_key, base_url FROM provider_configs").all();
-    const blocks = (rows.results || []).map(
-      (p) => "- **" + (p.label || p.id) + "** (" + p.id + "): " + p.base_url + " [" + maskApiKey(p.api_key) + "]"
-    );
-    blocks.push("- **default** (geraikita): " + DEFAULT_API_BASE + " [" + maskApiKey(env.EXTERNAL_API_KEY) + "]  (via EXTERNAL_API_KEY)");
-    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "**Provider terdaftar:**\n" + blocks.join("\n") + "\n\nGunakan format model:provider untuk memilih.");
+    const rows = await env.DB.prepare("SELECT id, label, api_key, base_url, models FROM provider_configs").all();
+    const blocks = (rows.results || []).map((p) => {
+      let modelsList = "";
+      try {
+        const m = JSON.parse(p.models || "[]");
+        if (m.length > 0) modelsList = "\n  Models: " + m.join(", ");
+      } catch {}
+      return "- " + (p.label || p.id) + " (" + p.id + "): " + p.base_url + " [" + maskApiKey(p.api_key) + "]" + modelsList;
+    });
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Provider terdaftar:\n" + blocks.join("\n\n") + "\n\nGunakan /model <nama_model> untuk ganti model (otomatis pilih provider).");
     return true;
   }
 

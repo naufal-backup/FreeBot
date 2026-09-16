@@ -73,6 +73,31 @@ export async function getActiveApi(env, chatId) {
   return config ? { base_url: config.base_url, api_key: config.api_key } : { base_url: DEFAULT_API_BASE, api_key: env.EXTERNAL_API_KEY };
 }
 
+/**
+ * Find which provider supports a given model name.
+ * Searches all provider_configs and matches model against their models JSON array.
+ * Returns { provider_id, base_url, api_key } or null.
+ */
+export async function findProviderForModel(env, modelName) {
+  if (!env.DB) return null;
+  try {
+    const rows = await env.DB.prepare("SELECT id, base_url, api_key, models FROM provider_configs").all();
+    for (const p of rows.results || []) {
+      try {
+        const models = JSON.parse(p.models || "[]");
+        if (models.includes(modelName)) {
+          return { provider_id: p.id, base_url: p.base_url, api_key: p.api_key };
+        }
+      } catch {
+        // skip invalid JSON
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 export async function getAllProviders(env) {
   const list = [];
   if (env.DB) {
