@@ -276,9 +276,13 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       const loopStartTime = Date.now();
       const MAX_LOOP_TIME_MS = 60000;
 
-      // Send typing action — auto-expires, no cleanup needed
-      await sendChatAction(env.TELEGRAM_TOKEN, chatId, "typing");
+      // Periodic typing indicator — refresh every 4 seconds, auto-expires
+      const typingInterval = setInterval(() => {
+        sendChatAction(env.TELEGRAM_TOKEN, chatId);
+      }, 4000);
+      sendChatAction(env.TELEGRAM_TOKEN, chatId);
 
+      try {
       while (iterations < MAX_TOOL_ITERATIONS) {
         // Check if /stop was called
         if (chatCancelled.get(chatId)) {
@@ -344,8 +348,6 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
             }
           }
           if (finalContent) break;
-          // Send typing action again for long tool loops
-          await sendChatAction(env.TELEGRAM_TOKEN, chatId, "typing");
           iterations++;
           continue;
         }
@@ -354,6 +356,9 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         break;
       }
       if (!finalContent) finalContent = "Terlalu banyak langkah tool. Coba jelaskan lebih singkat atau spesifik.";
+      } finally {
+        clearInterval(typingInterval);
+      }
 
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
       history = [...history, { role: "user", content: userText }, { role: "assistant", content: String(finalContent).trim() }];
