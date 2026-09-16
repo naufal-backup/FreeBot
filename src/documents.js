@@ -422,37 +422,6 @@ export async function extractDocumentText(env, fileId, fileName, mimeHint) {
   const buf = await dl.arrayBuffer();
   const bytes = new Uint8Array(buf);
 
-  // Try doc-to-md worker via service binding first
-  if (env.DOC_TO_MD) {
-    try {
-      // Convert to base64
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const base64 = btoa(binary);
-
-      console.log("[DOC_TO_MD] Calling worker, file:", fileName, "size:", bytes.length);
-      const resp = await env.DOC_TO_MD.fetch(new Request("https://doc-to-md.internal/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_name: fileName,
-          mime_type: mimeHint || "",
-          file_bytes: base64
-        })
-      }));
-
-      const result = await resp.json();
-      console.log("[DOC_TO_MD] Result:", result.text?.length || 0, "chars, error:", result.error);
-      if (result.text) return result.text;
-      if (result.error) throw new Error(result.error);
-    } catch (err) {
-      console.error("[DOC_TO_MD] Worker failed, falling back to local:", err.message);
-    }
-  }
-
-  // Local fallback: extract directly
   return localExtract(bytes, fileName, mimeHint, env);
 }
 
