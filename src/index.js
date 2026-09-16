@@ -102,7 +102,15 @@ export default {
             : mime.startsWith("image/")
             ? "image"
             : "";
-          const text = await extractDocumentText(env, docInfo.file_id, fileName, hint);
+          // Timeout 45s for document processing (download + extract + OCR)
+          const docController = new AbortController();
+          const docTimeout = setTimeout(() => docController.abort(), 45000);
+          let text;
+          try {
+            text = await extractDocumentText(env, docInfo.file_id, fileName, hint);
+          } finally {
+            clearTimeout(docTimeout);
+          }
           if (text && text.trim()) {
             userText =
               'Isi dokumen "' +
@@ -256,7 +264,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       let iterations = 0;
       const toolCallHistory = []; // Track tool calls to detect loops
       const loopStartTime = Date.now();
-      const MAX_LOOP_TIME_MS = 15000; // 15 seconds max
+      const MAX_LOOP_TIME_MS = 30000; // 30 seconds max
 
       while (iterations < MAX_TOOL_ITERATIONS) {
         // Auto-stop if loop takes too long
@@ -265,13 +273,13 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           break;
         }
         const controller = new AbortController();
-        const aiTimeout = setTimeout(() => controller.abort(), 15000);
+        const aiTimeout = setTimeout(() => controller.abort(), 30000);
         let externalRes;
         try {
           externalRes = await fetch(EXTERNAL_API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${api_key}` },
-            body: JSON.stringify({ model: AI_MODEL, messages, tools: allTools, max_tokens: 500 }),
+            body: JSON.stringify({ model: AI_MODEL, messages, tools: allTools, max_tokens: 2000 }),
             signal: controller.signal
           });
         } finally {
