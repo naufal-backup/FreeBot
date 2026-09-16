@@ -292,7 +292,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           externalRes = await fetch(EXTERNAL_API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${api_key}` },
-            body: JSON.stringify({ model: AI_MODEL, messages, tools: allTools, max_tokens: 2000 }),
+            body: JSON.stringify({ model: AI_MODEL, messages, tools: allTools, max_tokens: 4096 }),
             signal: controller.signal
           });
         } finally {
@@ -309,11 +309,15 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         const choice = aiData.choices?.[0];
         if (choice?.message) {
           finalMsg = choice.message;
+          if (!finalMsg.content && finalMsg.reasoning_content) {
+            finalMsg = { content: finalMsg.reasoning_content };
+          }
         } else if (aiData.content?.[0]?.text) {
           finalMsg = { content: aiData.content[0].text };
         }
         if (!finalMsg) {
           const resp = aiData?.error?.message || JSON.stringify(aiData).slice(0, 500);
+          console.error("[AI] unrecognized response:", resp);
           throw new Error(`AI response empty. Detail: ${resp}`);
         }
 
