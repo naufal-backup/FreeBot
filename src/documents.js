@@ -512,7 +512,7 @@ async function localExtract(bytes, fileName, mimeHint, env) {
       console.log("[LOCAL] Trying OCR fallback...");
       const ocrText = await ocrDocument(env, bytes, "application/pdf", fileName);
       console.log("[LOCAL] OCR result:", ocrText ? ocrText.length : 0, "chars");
-      if (ocrText && ocrText.length > text.length) return ocrText;
+      if (ocrText && ocrText.length > 20) return ocrText;
     }
     return text || "(Teks tidak dapat diekstrak. PDF mungkin hasil scan.)";
   }
