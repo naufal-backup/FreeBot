@@ -31,6 +31,9 @@ const COMMAND_HANDLERS = [
 // Serialize AI processing per chat to prevent race conditions
 const chatQueues = new Map();
 
+// Track thinking/typing indicator messages per chat
+const activeIndicators = new Map();
+
 function enqueueChatTask(chatId, task) {
   const prev = chatQueues.get(chatId) || Promise.resolve();
   const next = prev.then(task, task);
@@ -186,6 +189,13 @@ export default {
       const PROVIDER_ID = (activeModelForId || "").split(":")[1] || "";
       const EXTERNAL_API_URL = resolveApiEndpoint(base_url, AI_MODEL, PROVIDER_ID);
 
+      // Delete previous indicator if exists
+      const prevIndicator = activeIndicators.get(chatId);
+      if (prevIndicator) {
+        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, prevIndicator).catch(() => {});
+        activeIndicators.delete(chatId);
+      }
+
       // Step 1: Send "Thinking..." immediately
       let thinkingMessageId = null;
       try {
@@ -196,6 +206,9 @@ export default {
         });
         const thinkingData = await thinkingRes.json();
         thinkingMessageId = thinkingData?.result?.message_id || null;
+        if (thinkingMessageId) {
+          activeIndicators.set(chatId, thinkingMessageId);
+        }
       } catch {
         // best effort
       }
@@ -362,6 +375,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       if (msgToDelete) {
         await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, msgToDelete);
       }
+      activeIndicators.delete(chatId);
 
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
       history = [...history, { role: "user", content: userText }, { role: "assistant", content: String(finalContent).trim() }];
@@ -372,6 +386,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       if (cleanupMsg) {
         await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, cleanupMsg);
       }
+      activeIndicators.delete(chatId);
       try {
         const errMsg = err.message || "Unknown error";
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Error: ${errMsg.slice(0, 500)}`);
