@@ -1,7 +1,7 @@
 // src/documents.js
 // Text extraction for PDF, DOCX, HTML, TXT, MD, and image files.
 // Includes OCR fallback for scanned documents and images.
-// Supports FlateDecode compressed PDF streams.
+// Supports FlateDecode compressed PDF streams and CMap-based encoding.
 
 import { ocrDocument } from "./ocr.js";
 
@@ -40,18 +40,148 @@ async function decompressFlate(data) {
   return null;
 }
 
-function hexToUnicode(hex) {
-  // Convert hex string to unicode text
-  // PDF hex can be 2-digit (1 byte) or 4-digit (2 bytes UTF-16)
-  const text = [];
-  for (let i = 0; i < hex.length; i += 4) {
-    const code = parseInt(hex.slice(i, i + 4), 16);
-    if (code > 0) text.push(String.fromCharCode(code));
+// ── CMap support ────────────────────────────────────────────────────────────
+// CMap maps character codes (hex in PDF streams) to Unicode code points.
+// Common in CIDFont-based PDFs (CJK, modern fonts).
+
+function parseCMap(text) {
+  const cmap = new Map();
+
+  // beginbfchar: <srcHex> <dstHex>
+  // e.g. <0041> <0041> means code 0x0041 → U+0041 (A)
+  const bfCharRe = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
+  let section = null;
+  let m;
+
+  const lines = text.split("\n");
+  for (const line of lines) {
+    if (line.includes("beginbfchar")) { section = "char"; continue; }
+    if (line.includes("endbfchar")) { section = null; continue; }
+    if (line.includes("beginbfrange")) { section = "range"; continue; }
+    if (line.includes("endbfrange")) { section = null; continue; }
+
+    if (section === "char") {
+      const chM = line.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/);
+      if (chM) {
+        const src = parseInt(chM[1], 16);
+        const dst = parseInt(chM[2], 16);
+        cmap.set(src, String.fromCodePoint(dst));
+      }
+    }
+
+    if (section === "range") {
+      // Format: <startCode> <endCode> <startUnicode>
+      // e.g. <0041> <005A> <0041> → codes 0x41-0x5A map to U+0041-U+005A (A-Z)
+      const rangeM = line.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/);
+      if (rangeM) {
+        const startCode = parseInt(rangeM[1], 16);
+        const endCode = parseInt(rangeM[2], 16);
+        let startUnicode = parseInt(rangeM[3], 16);
+        for (let code = startCode; code <= endCode && code - startCode < 5000; code++) {
+          cmap.set(code, String.fromCodePoint(startUnicode));
+          startUnicode++;
+        }
+      }
+    }
   }
-  return text.join("");
+
+  return cmap;
 }
 
-function extractTextFromRaw(raw) {
+async function extractCMapsFromPdf(data) {
+  const decoder = new TextDecoder("utf-8");
+  const merged = new Map();
+  const streamMarker = new Uint8Array([115, 116, 114, 97, 101, 109]); // "stream"
+  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]); // "endstream"
+
+  let pos = 0;
+  while (pos < data.length) {
+    const streamIdx = findBytes(data, streamMarker, pos);
+    if (streamIdx === -1) break;
+    const endIdx = findBytes(data, endstreamMarker, streamIdx + 6);
+    if (endIdx === -1) break;
+
+    // Check if this stream's dictionary mentions CMap or ToUnicode
+    const dictStart = Math.max(0, streamIdx - 2000);
+    const dictSlice = decoder.decode(data.slice(dictStart, streamIdx));
+
+    if (dictSlice.includes("CMap") || dictSlice.includes("ToUnicode") || dictSlice.includes("beginbfchar")) {
+      let dataStart = streamIdx + 6;
+      if (data[dataStart] === 13) dataStart++;
+      if (data[dataStart] === 10) dataStart++;
+      let dataEnd = endIdx;
+      while (dataEnd > dataStart && (data[dataEnd - 1] === 10 || data[dataEnd - 1] === 13)) dataEnd--;
+
+      const streamBytes = data.slice(dataStart, dataEnd);
+      let streamText = "";
+
+      // Try decompressing if FlateDecode
+      if (dictSlice.includes("FlateDecode")) {
+        const decompressed = await decompressFlate(streamBytes);
+        if (decompressed) streamText = decoder.decode(decompressed);
+      } else {
+        streamText = decoder.decode(streamBytes);
+      }
+
+      if (streamText.includes("beginbfchar") || streamText.includes("beginbfrange")) {
+        const cmap = parseCMap(streamText);
+        for (const [k, v] of cmap) merged.set(k, v);
+      }
+    }
+
+    pos = endIdx + 9;
+  }
+
+  return merged;
+}
+
+// ── Hex → Unicode with CMap support ─────────────────────────────────────────
+
+function hexToUnicode(hex, cmap) {
+  // Convert hex string to unicode text using CMap if available.
+  // PDF hex: pairs of 2 hex digits per byte. Common patterns:
+  //   4 hex digits (2 bytes) → character code
+  //   2 hex digits (1 byte)  → character code (single-byte font)
+
+  const results = [];
+  // PDF hex strings are pairs of hex digits: "0041" = code 0x0041
+  // They can be 2-digit (1 byte), 4-digit (2 bytes), or 6-digit (3 bytes)
+  const chunkSize = hex.length <= 4 ? 2 : 4; // auto-detect byte width
+
+  if (cmap && cmap.size > 0) {
+    // Use CMap: treat entire hex string as a sequence of character codes
+    // Try 4-digit chunks first (2-byte CID fonts)
+    if (hex.length % 4 === 0) {
+      for (let i = 0; i < hex.length; i += 4) {
+        const code = parseInt(hex.slice(i, i + 4), 16);
+        results.push(cmap.get(code) || String.fromCodePoint(code));
+      }
+    } else {
+      // Fallback: try 2-digit chunks (1-byte fonts)
+      for (let i = 0; i < hex.length; i += 2) {
+        const code = parseInt(hex.slice(i, i + 2), 16);
+        results.push(cmap.get(code) || String.fromCodePoint(code));
+      }
+    }
+  } else {
+    // No CMap — direct code point mapping
+    if (hex.length % 4 === 0) {
+      for (let i = 0; i < hex.length; i += 4) {
+        const code = parseInt(hex.slice(i, i + 4), 16);
+        if (code > 0) results.push(String.fromCodePoint(code));
+      }
+    } else {
+      for (let i = 0; i < hex.length; i += 2) {
+        const code = parseInt(hex.slice(i, i + 2), 16);
+        if (code > 0) results.push(String.fromCodePoint(code));
+      }
+    }
+  }
+
+  return results.join("");
+}
+
+function extractTextFromRaw(raw, cmap) {
   const results = [];
   let m;
 
@@ -65,14 +195,14 @@ function extractTextFromRaw(raw) {
     const inner = m[1].match(/\(([^)]*)\)/g);
     if (inner) for (const i of inner) results.push(i.slice(1, -1));
     const innerHex = m[1].match(/<([0-9A-Fa-f]+)>/g);
-    if (innerHex) for (const i of innerHex) results.push(hexToUnicode(i.slice(1, -1)));
+    if (innerHex) for (const i of innerHex) results.push(hexToUnicode(i.slice(1, -1), cmap));
   }
 
   // Hex strings before Tj (not inside TJ array): capture all <hex> blocks before Tj
   const tjBlockRe = /(?:^|\s)((?:<[0-9A-Fa-f]+>\s*)+)\s*Tj/g;
   while ((m = tjBlockRe.exec(raw)) !== null) {
     const hexes = m[1].match(/<([0-9A-Fa-f]+)>/g);
-    if (hexes) for (const h of hexes) results.push(hexToUnicode(h.slice(1, -1)));
+    if (hexes) for (const h of hexes) results.push(hexToUnicode(h.slice(1, -1), cmap));
   }
 
   // BT...ET blocks fallback
@@ -86,7 +216,7 @@ function extractTextFromRaw(raw) {
       const hRe = /<([0-9A-Fa-f]+)>/g;
       let hm;
       while ((hm = hRe.exec(block)) !== null) {
-        if (hm[1].length >= 4) results.push(hexToUnicode(hm[1]));
+        if (hm[1].length >= 4) results.push(hexToUnicode(hm[1], cmap));
       }
     }
   }
@@ -98,8 +228,12 @@ export async function extractPdfText(data) {
   const decoder = new TextDecoder("utf-8");
   const raw = decoder.decode(data);
 
-  // Step 1: try simple regex on raw PDF (uncompressed streams)
-  let text = extractTextFromRaw(raw);
+  // Step 0: extract CMap (character code → Unicode mapping)
+  const cmap = await extractCMapsFromPdf(data);
+  console.log("[PDF] CMap entries:", cmap.size);
+
+  // Step 1: try simple regex on raw PDF (uncompressed streams), with CMap
+  let text = extractTextFromRaw(raw, cmap);
   if (text && text.length > 50) return text;
 
   // Step 2: find compressed streams, decompress, extract
@@ -135,7 +269,7 @@ export async function extractPdfText(data) {
 
       if (decompressed) {
         const decompRaw = decoder.decode(decompressed);
-        const decompText = extractTextFromRaw(decompRaw);
+        const decompText = extractTextFromRaw(decompRaw, cmap);
         if (decompText) allResults.push(decompText);
 
         // Also try BT...ET blocks in decompressed data
@@ -146,6 +280,12 @@ export async function extractPdfText(data) {
           if (lines) {
             const btText = lines.map(l => l.slice(1, -1)).join(" ").trim();
             if (btText) allResults.push(btText);
+          }
+          // Also try hex in BT blocks
+          const hexRe = /<([0-9A-Fa-f]+)>/g;
+          let hm;
+          while ((hm = hexRe.exec(bm[1])) !== null) {
+            if (hm[1].length >= 4) allResults.push(hexToUnicode(hm[1], cmap));
           }
         }
       }
