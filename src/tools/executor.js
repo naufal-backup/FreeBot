@@ -4,6 +4,8 @@
 
 import { fmtBytes } from "../utils/format.js";
 import { parseNaturalTime } from "../utils/time.js";
+import { markdownToHtml } from "../utils/markdown.js";
+import { generatePdfHtml } from "../utils/pdfTemplate.js";
 import { sendTelegramDocument } from "../telegram.js";
 import { extractDocumentText } from "../documents.js";
 import {
@@ -370,6 +372,17 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, content);
         if (!result.ok) return `\u274C Gagal mengirim file: ${result.error}`;
         return `\u2705 File **${fileName}** berhasil dikirim. Silakan cek chat untuk mendownload.`;
+      }
+
+      case "generate_pdf": {
+        const title = args.title || "Dokumen";
+        const content = args.content || "";
+        if (!content) return "Konten dokumen tidak boleh kosong.";
+        const fileName = args.filename || "document.html";
+        const html = generatePdfHtml(title, markdownToHtml(content));
+        const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, html);
+        if (!result.ok) return `\u274C Gagal mengirim dokumen: ${result.error}`;
+        return `\u2705 Dokumen **${title}** berhasil dikirim. Buka file lalu klik tombol "Download PDF" untuk menyimpan.`;
       }
 
       case "cron_list": {

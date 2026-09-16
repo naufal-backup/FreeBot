@@ -260,7 +260,11 @@ PENTING TOOL: Jika sudah punya jawaban dari tool sebelumnya, JANGAN panggil tool
 - list_github_repos(): lihat semua repo GitHub milikmu.
 - change_repo_visibility(repo, private): ubah visibilitas repo (public/private). Konfirmasi dulu.
 - create_repo_branch(repo, branch): buat branch baru dari main/sumber lain.
-- delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi dulu.${cavemanRules}
+- delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi dulu.
+- generate_file(name, content): buat file teks (md/txt/js/py/html/css/json) dan kirim ke user.
+- generate_pdf(title, content, filename): buat dokumen HTML dengan tombol download PDF. Panggil saat user minta essay, artikel, laporan, dokumen PDF.
+
+KETIKA USER MINTA PDF/ESSAY/ARTIKEL/LAPORAN: Gunakan generate_pdf. Isi content dalam format markdown, nanti otomatis dikonversi ke HTML yang rapi dengan tombol download.
 
 Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab dengan teks biasa jika tool tersedia.`;
 

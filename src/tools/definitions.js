@@ -249,6 +249,22 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "generate_pdf",
+      description: 'Buat dokumen HTML dengan tombol download PDF. Panggil saat user minta "buat essay", "buat pdf", "buat artikel", "buat laporan", "buat dokumen".',
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Judul dokumen" },
+          content: { type: "string", description: "Isi dokumen dalam format markdown" },
+          filename: { type: "string", description: "Nama file (default: document.html)" }
+        },
+        required: ["title", "content"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "cron_list",
       description: "Tampilkan semua tugas cron yang sudah dijadwalkan untuk user ini.",
       parameters: { type: "object", properties: {} }
