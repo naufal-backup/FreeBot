@@ -3,7 +3,7 @@
 // Cron Trigger (scheduled) to the rest of the modules.
 
 import { MAX_TOOL_ITERATIONS, MEMORY_MAX_ENTRIES } from "./config.js";
-import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote } from "./telegram.js";
+import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote, sendChatAction } from "./telegram.js";
 import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
@@ -31,59 +31,8 @@ const COMMAND_HANDLERS = [
 // Serialize AI processing per chat to prevent race conditions
 const chatQueues = new Map();
 
-// Track thinking/typing indicator messages per chat for cleanup
-const activeIndicators = new Map();
-
-async function sendIndicator(token, chatId) {
-  // Delete previous indicator if exists
-  const prev = activeIndicators.get(chatId);
-  if (prev) {
-    await deleteTelegramMessage(token, chatId, prev).catch(() => {});
-    activeIndicators.delete(chatId);
-  }
-  // Send new Thinking indicator
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: "🧠 Thinking..." })
-    });
-    const data = await res.json();
-    const msgId = data?.result?.message_id || null;
-    if (msgId) activeIndicators.set(chatId, msgId);
-    return msgId;
-  } catch {
-    return null;
-  }
-}
-
-async function editIndicator(token, chatId, msgId, text) {
-  if (!msgId) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, message_id: msgId, text })
-    });
-  } catch {
-    // best effort
-  }
-}
-
-async function deleteIndicator(token, chatId) {
-  const msgId = activeIndicators.get(chatId);
-  if (msgId) {
-    await deleteTelegramMessage(token, chatId, msgId).catch(() => {});
-    activeIndicators.delete(chatId);
-  }
-}
-
-function enqueueChatTask(chatId, task) {
-  const prev = chatQueues.get(chatId) || Promise.resolve();
-  const next = prev.then(task, task);
-  chatQueues.set(chatId, next.catch(() => {}));
-  return next;
-}
+// Per-chat cancellation flag — set by /stop, checked in AI loop
+const chatCancelled = new Map();
 
 export default {
   async scheduled(event, env, ctx) {
@@ -149,7 +98,6 @@ export default {
             : mime.startsWith("image/")
             ? "image"
             : "";
-          // Timeout 45s for document processing (download + extract + OCR)
           const docController = new AbortController();
           const docTimeout = setTimeout(() => docController.abort(), 45000);
           let text;
@@ -190,6 +138,7 @@ export default {
 
     // --- Commands available to everyone (even before the allow-list) ------
     if (cmdWord === "/stop") {
+      chatCancelled.set(chatId, true);
       await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/deleteMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -213,6 +162,9 @@ export default {
 
     // --- Process remaining commands and AI in chat queue to serialize per-chat ---
     return enqueueChatTask(chatId, async () => {
+
+    // Clear cancellation flag at start of new task
+    chatCancelled.delete(chatId);
 
     // --- Slash commands -------------------------------------------------
     if (cmdWord.startsWith("/")) {
@@ -239,20 +191,10 @@ export default {
         return new Response("OK", { status: 200 });
       }
       const { base_url, api_key } = apiConfig;
-      const activeModelForId = await getActiveModel(env, chatId);
-      const AI_MODEL = (activeModelForId || "").split(":")[0] || "";
-      const PROVIDER_ID = (activeModelForId || "").split(":")[1] || "";
+      const activeModelForId2 = await getActiveModel(env, chatId);
+      const AI_MODEL = (activeModelForId2 || "").split(":")[0] || "";
+      const PROVIDER_ID = (activeModelForId2 || "").split(":")[1] || "";
       const EXTERNAL_API_URL = resolveApiEndpoint(base_url, AI_MODEL, PROVIDER_ID);
-
-      // Send Thinking indicator, edit to Typing after 3s
-      const indicatorMsgId = await sendIndicator(env.TELEGRAM_TOKEN, chatId);
-      const typingTimer = setTimeout(() => {
-        editIndicator(env.TELEGRAM_TOKEN, chatId, indicatorMsgId, "✍️ Typing...");
-      }, 3000);
-      // Safety: auto-delete indicator after 60s if stuck
-      const safetyTimer = setTimeout(() => {
-        deleteIndicator(env.TELEGRAM_TOKEN, chatId);
-      }, 60000);
 
       let history = await getChatMemory(env, chatId);
       if (history.length >= MEMORY_MAX_ENTRIES) {
@@ -319,18 +261,25 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
 
       let finalContent = "";
       let iterations = 0;
-      const toolCallHistory = []; // Track tool calls to detect loops
+      const toolCallHistory = [];
       const loopStartTime = Date.now();
-      const MAX_LOOP_TIME_MS = 30000; // 30 seconds max
+      const MAX_LOOP_TIME_MS = 60000;
+
+      // Send typing action — auto-expires, no cleanup needed
+      await sendChatAction(env.TELEGRAM_TOKEN, chatId, "typing");
 
       while (iterations < MAX_TOOL_ITERATIONS) {
-        // Auto-stop if loop takes too long
+        // Check if /stop was called
+        if (chatCancelled.get(chatId)) {
+          finalContent = "Proses dihentikan oleh user.";
+          break;
+        }
         if (Date.now() - loopStartTime > MAX_LOOP_TIME_MS) {
           finalContent = "Waktu pemrosesan habis. Coba jelaskan lebih singkat.";
           break;
         }
         const controller = new AbortController();
-        const aiTimeout = setTimeout(() => controller.abort(), 30000);
+        const aiTimeout = setTimeout(() => controller.abort(), 60000);
         let externalRes;
         try {
           externalRes = await fetch(EXTERNAL_API_URL, {
@@ -349,13 +298,11 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           throw new Error(`AI API error: ${errMsg}`);
         }
         const aiData = await externalRes.json();
-        // Handle both OpenAI format (choices[0]) and Anthropic format (content[0])
         let finalMsg = null;
         const choice = aiData.choices?.[0];
         if (choice?.message) {
           finalMsg = choice.message;
         } else if (aiData.content?.[0]?.text) {
-          // Anthropic messages format
           finalMsg = { content: aiData.content[0].text };
         }
         if (!finalMsg) {
@@ -366,9 +313,13 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         if (finalMsg.tool_calls?.length > 0) {
           messages.push(finalMsg);
           for (const tc of finalMsg.tool_calls) {
+            // Check /stop between tool calls
+            if (chatCancelled.get(chatId)) {
+              finalContent = "Proses dihentikan oleh user.";
+              break;
+            }
             const result = await executeTool(tc, env, chatId, fromId);
             messages.push({ role: "tool", tool_call_id: tc.id, content: result });
-            // Detect loop: same tool name + same args = stuck
             const callKey = `${tc.function?.name}:${tc.function?.arguments}`;
             toolCallHistory.push(callKey);
             const sameCount = toolCallHistory.filter((k) => k === callKey).length;
@@ -378,6 +329,8 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
             }
           }
           if (finalContent) break;
+          // Send typing action again for long tool loops
+          await sendChatAction(env.TELEGRAM_TOKEN, chatId, "typing");
           iterations++;
           continue;
         }
@@ -387,17 +340,11 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       }
       if (!finalContent) finalContent = "Terlalu banyak langkah tool. Coba jelaskan lebih singkat atau spesifik.";
 
-      clearTimeout(typingTimer);
-      clearTimeout(safetyTimer);
-      await deleteIndicator(env.TELEGRAM_TOKEN, chatId);
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
       history = [...history, { role: "user", content: userText }, { role: "assistant", content: String(finalContent).trim() }];
       await saveChatMemory(env, chatId, history);
     } catch (err) {
       console.error(err);
-      clearTimeout(typingTimer);
-      clearTimeout(safetyTimer);
-      await deleteIndicator(env.TELEGRAM_TOKEN, chatId);
       try {
         const errMsg = err.message || "Unknown error";
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Error: ${errMsg.slice(0, 500)}`);
