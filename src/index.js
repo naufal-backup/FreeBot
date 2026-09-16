@@ -7,7 +7,7 @@ import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote } from "./tele
 import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
-import { getActiveModel, getActiveApi, resolveApiEndpoint, isAnthropicFormat } from "./models.js";
+import { getActiveModel, getActiveApi, resolveApiEndpoint } from "./models.js";
 import { getChatMemory, saveChatMemory, summarizeHistory, getCavemanMode } from "./storage.js";
 import { getAllToolDefinitions } from "./tools/definitions.js";
 import { executeTool } from "./tools/executor.js";
@@ -178,9 +178,14 @@ export default {
 
     // --- Free-text AI chat, with tool calling ----------------------------
     try {
-      const { base_url, api_key } = await getActiveApi(env, chatId);
+      const apiConfig = await getActiveApi(env, chatId);
+      if (!apiConfig) {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Belum ada provider. Tambah dengan /addprovider\nContoh: /addprovider zen https://api.example.com/v1 sk-xxx model1,model2");
+        return new Response("OK", { status: 200 });
+      }
+      const { base_url, api_key } = apiConfig;
       const activeModelForId = await getActiveModel(env, chatId);
-      const AI_MODEL = (activeModelForId || "").split(":")[0] || "deepseek-v4-flash";
+      const AI_MODEL = (activeModelForId || "").split(":")[0] || "";
       const PROVIDER_ID = (activeModelForId || "").split(":")[1] || "";
       const EXTERNAL_API_URL = resolveApiEndpoint(base_url, AI_MODEL, PROVIDER_ID);
 

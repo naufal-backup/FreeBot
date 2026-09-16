@@ -1,19 +1,17 @@
 // src/models.js
-// Manages active AI model per chat, provider configs, and the "active API"
-// (base_url + api_key) resolution used for every completion request.
+// Manages active AI model per chat, provider configs, and API resolution.
+// NO hardcoded models — everything from D1 provider_configs.
 
-import { DEFAULT_API_BASE, FALLBACK_MODELS, ZEN_API_BASE } from "./config.js";
 import { maskApiKey } from "./utils/format.js";
 import { sendTelegram } from "./telegram.js";
 
 export async function getActiveModel(env, chatId) {
-  const fallback = env.AI_MODEL || "deepseek-v4-flash";
-  if (!env.DB) return fallback;
+  if (!env.DB) return null;
   try {
     const row = await env.DB.prepare("SELECT model FROM chat_settings WHERE chat_id = ?").bind(String(chatId)).first();
-    return row?.model || fallback;
+    return row?.model || null;
   } catch {
-    return fallback;
+    return null;
   }
 }
 
@@ -23,60 +21,29 @@ export async function setActiveModel(env, chatId, model) {
   ).bind(String(chatId), model, Date.now()).run();
 }
 
-export async function getApiConfig(env) {
-  if (!env.DB) return null;
-  try {
-    const row = await env.DB.prepare("SELECT base_url, api_key FROM api_config WHERE id = ?").bind("active").first();
-    return row ? { base_url: row.base_url, api_key: row.api_key } : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function setApiConfig(env, base_url, api_key) {
-  await env.DB.prepare(
-    "INSERT OR REPLACE INTO api_config (id, base_url, api_key, updated_at) VALUES (?, ?, ?, ?)"
-  ).bind("active", base_url, api_key, Date.now()).run();
-}
-
-export async function setApiBase(env, base_url) {
-  const existing = await getApiConfig(env);
-  const api_key = existing?.api_key || env.EXTERNAL_API_KEY || "";
-  await setApiConfig(env, base_url, api_key);
-}
-
-export async function setApiKey(env, api_key) {
-  const existing = await getApiConfig(env);
-  const base_url = existing?.base_url || DEFAULT_API_BASE;
-  await setApiConfig(env, base_url, api_key);
-}
-
-export async function clearApiConfig(env) {
-  if (!env.DB) return;
-  await env.DB.prepare("DELETE FROM api_config WHERE id = ?").bind("active").run();
-}
-
+/**
+ * Get API config for the active model of a chat.
+ * Parses model string like "deepseek-v4-flash:zen" to find provider.
+ * Returns { base_url, api_key } or null if no provider found.
+ */
 export async function getActiveApi(env, chatId) {
-  if (chatId && env.DB) {
-    try {
-      const row = await env.DB.prepare("SELECT model FROM chat_settings WHERE chat_id = ?").bind(String(chatId)).first();
-      const prov = (row?.model || "").split(":")[1] || "";
-      if (prov) {
-        const p = await env.DB.prepare("SELECT base_url, api_key FROM provider_configs WHERE id = ?").bind(prov).first();
-        if (p) return { base_url: p.base_url, api_key: p.api_key };
-      }
-    } catch {
-      // fall through to default config
+  if (!chatId || !env.DB) return null;
+  try {
+    const row = await env.DB.prepare("SELECT model FROM chat_settings WHERE chat_id = ?").bind(String(chatId)).first();
+    const prov = (row?.model || "").split(":")[1] || "";
+    if (prov) {
+      const p = await env.DB.prepare("SELECT base_url, api_key FROM provider_configs WHERE id = ?").bind(prov).first();
+      if (p) return { base_url: p.base_url, api_key: p.api_key };
     }
+  } catch {
+    // ignore
   }
-  const config = await getApiConfig(env);
-  return config ? { base_url: config.base_url, api_key: config.api_key } : { base_url: DEFAULT_API_BASE, api_key: env.EXTERNAL_API_KEY };
+  return null;
 }
 
 /**
  * Find which provider supports a given model name.
  * Searches all provider_configs and matches model against their models JSON array.
- * Returns { provider_id, base_url, api_key } or null.
  */
 export async function findProviderForModel(env, modelName) {
   if (!env.DB) return null;
@@ -102,19 +69,12 @@ export async function getAllProviders(env) {
   const list = [];
   if (env.DB) {
     try {
-      const rows = await env.DB.prepare("SELECT id, base_url, api_key, label FROM provider_configs").all();
+      const rows = await env.DB.prepare("SELECT id, base_url, api_key, label, models FROM provider_configs").all();
       for (const p of rows.results || []) list.push(p);
     } catch {
       // ignore
     }
-    try {
-      const cfg = await env.DB.prepare("SELECT base_url, api_key FROM api_config WHERE id = 'active'").first();
-      if (cfg) list.unshift({ id: "default", base_url: cfg.base_url, api_key: cfg.api_key, label: "default" });
-    } catch {
-      // ignore
-    }
   }
-  if (!list.length) list.push({ id: "geraikita", base_url: DEFAULT_API_BASE, api_key: env.EXTERNAL_API_KEY, label: "geraikita" });
   return list;
 }
 
@@ -138,16 +98,20 @@ export async function getAllModels(env) {
   const providers = await getAllProviders(env);
   const out = [];
   for (const p of providers) {
-    const list = await fetchProviderModels(p.base_url, p.api_key);
-    if (!list || !list.length) continue;
-    for (const m of list) {
-      out.push({
-        real: m.id,
-        disp: m.disp,
-        provider: p.id,
-        realLabel: m.id + ":" + p.id,
-        dispLabel: m.disp + ":" + p.id
-      });
+    // Use models from D1 config first
+    try {
+      const configured = JSON.parse(p.models || "[]");
+      for (const m of configured) {
+        out.push({
+          real: m,
+          disp: m,
+          provider: p.id,
+          realLabel: m + ":" + p.id,
+          dispLabel: m + ":" + p.id
+        });
+      }
+    } catch {
+      // ignore
     }
   }
   return out;
@@ -157,11 +121,13 @@ export async function resolveModelLabel(env, target) {
   if (!target) return null;
   const models = await getAllModels(env);
   const t = target.trim();
+  // Try exact match with provider suffix
   const withProv = models.find((m) => m.dispLabel === t || m.realLabel === t);
   if (withProv) return withProv.realLabel;
+  // Try bare name match
   const bare = models.find((m) => m.disp === t || m.id === t);
   if (bare) return bare.realLabel;
-  return FALLBACK_MODELS.includes(t) ? t : null;
+  return null;
 }
 
 export async function buildModelChunks(env) {
@@ -169,20 +135,23 @@ export async function buildModelChunks(env) {
   const chunks = [];
   const LIMIT = 3600;
   for (const p of providers) {
-    const list = await fetchProviderModels(p.base_url, p.api_key);
-    if (!list || !list.length) continue;
-    const lines = list.map((m) => "  " + m.disp + ":" + p.id);
-    let buf = "\u{1F50C} " + (p.label || p.id) + " (" + p.id + ") \u2014 " + list.length + " model\n";
+    let models = [];
+    try {
+      models = JSON.parse(p.models || "[]");
+    } catch {}
+    if (!models.length) continue;
+    const lines = models.map((m) => "  " + m + ":" + p.id);
+    let buf = (p.label || p.id) + " (" + p.id + ") — " + models.length + " model\n";
     for (const line of lines) {
       if (buf.length + line.length + 1 > LIMIT) {
         chunks.push(buf.trimEnd());
-        buf = "\u{1F50C} " + (p.label || p.id) + " (" + p.id + ") lanjutan\n";
+        buf = (p.label || p.id) + " (" + p.id + ") lanjutan\n";
       }
       buf += line + "\n";
     }
     if (buf.trim()) chunks.push(buf.trimEnd());
   }
-  if (!chunks.length) chunks.push("(tidak ada provider yang berhasil memuat daftar model)");
+  if (!chunks.length) chunks.push("Belum ada provider. Tambah dengan /addprovider");
   return chunks;
 }
 
@@ -194,40 +163,12 @@ export async function sendModelList(env, chatId, header) {
   }
 }
 
-// Zen models that use /responses endpoint (OpenAI format)
-const ZEN_RESPONSES_MODELS = /^(gpt-|grok-|muse-spark)/;
-// Zen models that use /messages endpoint (Anthropic format)
-const ZEN_MESSAGES_MODELS = /^(claude-|qwen)/;
-// Zen models that use /chat/completions endpoint (OpenAI-compatible)
-const ZEN_CHAT_COMPLETIONS_MODELS = /^(deepseek-|minimax-|glm-|kimi-|mimo-|nemotron-|big-pickle|ling-)/;
-
 /**
  * Resolve the correct API endpoint URL for a given model and provider.
- * Zen uses different endpoints depending on the model type.
+ * Defaults to /chat/completions for all providers.
  */
 export function resolveApiEndpoint(base_url, model, providerId) {
-  if (providerId !== "zen") {
-    return `${base_url}/chat/completions`;
-  }
-  const bareModel = (model || "").split(":")[0];
-  if (ZEN_RESPONSES_MODELS.test(bareModel)) {
-    return `${ZEN_API_BASE}/responses`;
-  }
-  if (ZEN_MESSAGES_MODELS.test(bareModel)) {
-    return `${ZEN_API_BASE}/messages`;
-  }
-  return `${ZEN_API_BASE}/chat/completions`;
-}
-
-/**
- * Check if a model/provider combination uses Anthropic messages format.
- */
-export function isAnthropicFormat(model, providerId) {
-  if (providerId === "zen") {
-    const bareModel = (model || "").split(":")[0];
-    return ZEN_MESSAGES_MODELS.test(bareModel);
-  }
-  return false;
+  return `${base_url}/chat/completions`;
 }
 
 export { maskApiKey };
