@@ -17,6 +17,7 @@ import { handleAuthCommands } from "./commands/auth.js";
 import { handleApiCommands } from "./commands/apiConfig.js";
 import { handleProjectCommands } from "./commands/projects.js";
 import { handleScheduleCommands } from "./commands/schedule.js";
+import { handleDocplainCommand } from "./commands/docplain.js";
 
 // Command groups tried, in order, once the user has passed the allow-list
 // check. Each handler returns true if it matched & handled the command.
@@ -25,7 +26,8 @@ const COMMAND_HANDLERS = [
   handleAuthCommands,
   handleApiCommands,
   handleProjectCommands,
-  handleScheduleCommands
+  handleScheduleCommands,
+  handleDocplainCommand
 ];
 
 // Serialize AI processing per chat to prevent race conditions
@@ -177,7 +179,7 @@ export default {
     // --- Slash commands -------------------------------------------------
     if (cmdWord.startsWith("/")) {
       for (const handler of COMMAND_HANDLERS) {
-        const handled = await handler(cmdWord, cmdArg, env, chatId, fromId, messageId);
+        const handled = await handler(cmdWord, cmdArg, env, chatId, fromId, messageId, docInfo);
         if (handled) return new Response("OK", { status: 200 });
       }
     }

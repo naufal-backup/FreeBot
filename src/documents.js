@@ -1,8 +1,9 @@
 // src/documents.js
 // Text extraction for PDF, DOCX, HTML, TXT, MD, and image files.
-// Uses Cloudflare AI toMarkdown for PDF/DOCX, OCR fallback for scanned/image docs.
+// Uses unpdf (Mozilla PDF.js) for PDF, OCR fallback for scanned/image docs.
 
 import { ocrDocument } from "./ocr.js";
+import { extractText, getDocumentProxy } from "unpdf";
 
 function isGarbledText(text) {
   if (!text || text.length < 50) return true;
@@ -10,6 +11,12 @@ function isGarbledText(text) {
   if (words.length < 10) return false;
   const singleAlpha = words.filter(w => w.length === 1 && /[a-zA-Z]/.test(w)).length;
   return singleAlpha / words.length > 0.3;
+}
+
+export async function extractPdfText(bytes) {
+  const pdf = await getDocumentProxy(new Uint8Array(bytes));
+  const { text } = await extractText(pdf, { mergePages: true });
+  return (text || "").trim();
 }
 
 function extractHtmlText(data) {
@@ -87,38 +94,26 @@ async function localExtract(bytes, fileName, mimeHint, env) {
   const sig = String.fromCharCode(...bytes.slice(0, 4));
 
   if (sig.startsWith("%PDF") || (isPdf && !isDocx)) {
-    console.log("[LOCAL] PDF via AI.toMarkdown...");
-    try {
-      const result = await env.AI.toMarkdown({
-        name: fileName || "document.pdf",
-        blob: new Blob([bytes], { type: "application/pdf" })
-      });
-      let text = result?.data || "";
-      console.log("[LOCAL] PDF:", text.length, "chars");
-      if (text && text.length > 50 && !isGarbledText(text)) return text;
-    } catch (e) {
-      console.error("[LOCAL] AI.toMarkdown failed:", e.message);
+    console.log("[LOCAL] PDF via unpdf...");
+    let text = await extractPdfText(bytes);
+    const garbled = isGarbledText(text);
+    console.log("[LOCAL] PDF:", text.length, "chars, garbled:", garbled);
+    if (!text || text.length < 50 || garbled) {
+      console.log("[LOCAL] OCR fallback...");
+      const ocrText = await ocrDocument(env, bytes, "application/pdf", fileName);
+      if (ocrText && ocrText.length > 20) return ocrText;
     }
-    console.log("[LOCAL] OCR fallback...");
-    const ocrText = await ocrDocument(env, bytes, "application/pdf", fileName);
-    return ocrText || "(Teks tidak dapat diekstrak. PDF mungkin hasil scan.)";
+    return text || "(Teks tidak dapat diekstrak. PDF mungkin hasil scan.)";
   }
 
   if (sig.startsWith("PK") && (isDocx || !isPdf)) {
-    console.log("[LOCAL] DOCX via AI.toMarkdown...");
-    try {
-      const result = await env.AI.toMarkdown({
-        name: fileName || "document.docx",
-        blob: new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })
-      });
-      let text = result?.data || "";
-      console.log("[LOCAL] DOCX:", text.length, "chars");
-      if (text && text.length > 30) return text;
-    } catch (e) {
-      console.error("[LOCAL] AI.toMarkdown failed:", e.message);
+    console.log("[LOCAL] DOCX via regex...");
+    let text = extractDocxText(bytes);
+    if (!text || text.length < 30) {
+      const ocrText = await ocrDocument(env, bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", fileName);
+      if (ocrText && ocrText.length > 20) return ocrText;
     }
-    const ocrText = await ocrDocument(env, bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", fileName);
-    return ocrText || "(Teks kosong atau DOCX berisi gambar)";
+    return text || "(Teks kosong atau DOCX berisi gambar)";
   }
 
   if (isImage || detectImageMime(bytes)) {
@@ -139,4 +134,44 @@ async function localExtract(bytes, fileName, mimeHint, env) {
   if (fallback && fallback.length > 10) return fallback;
 
   throw new Error("Format tidak didukung. Kirim PDF, DOCX, HTML, TXT, MD, atau gambar.");
+}
+
+function extractDocxText(data) {
+  try {
+    const view = new DataView(data.buffer || data);
+    let offset = 0;
+    const files = {};
+    while (offset + 30 < data.length) {
+      if (view.getUint32(offset, true) !== 0x04034b50) {
+        offset++;
+        continue;
+      }
+      const compressedSize = view.getUint32(offset + 18, true);
+      const fileNameLen = view.getUint16(offset + 26, true);
+      const extraLen = view.getUint16(offset + 28, true);
+      const nameOff = offset + 30;
+      const name = new TextDecoder().decode(data.slice(nameOff, nameOff + fileNameLen));
+      const dataOff = nameOff + fileNameLen + extraLen;
+      const compData = data.slice(dataOff, dataOff + compressedSize);
+      files[name] = compData;
+      offset = dataOff + compressedSize;
+    }
+
+    const docXml =
+      files["word/document.xml"] ||
+      files["word/document2.xml"] ||
+      Object.values(files).find((v, k) => k.includes("document.xml"));
+    if (!docXml) return "(Tidak ditemukan word/document.xml dalam DOCX.)";
+
+    const xml = new TextDecoder("utf-8", { fatal: false }).decode(docXml);
+    const texts = [];
+    let m;
+    const wtRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+    while ((m = wtRe.exec(xml)) !== null) {
+      texts.push(m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"));
+    }
+    return texts.join("\n").trim() || "";
+  } catch (err) {
+    return `(Gagal baca DOCX: ${err.message})`;
+  }
 }
