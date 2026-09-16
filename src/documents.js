@@ -40,16 +40,57 @@ async function decompressFlate(data) {
   return null;
 }
 
+function hexToUnicode(hex) {
+  // Convert hex string to unicode text
+  // PDF hex can be 2-digit (1 byte) or 4-digit (2 bytes UTF-16)
+  const text = [];
+  for (let i = 0; i < hex.length; i += 4) {
+    const code = parseInt(hex.slice(i, i + 4), 16);
+    if (code > 0) text.push(String.fromCharCode(code));
+  }
+  return text.join("");
+}
+
 function extractTextFromRaw(raw) {
   const results = [];
   let m;
+
+  // Parenthesized strings: (text) Tj
   const tjRe = /\(([^)]*)\)\s*Tj/g;
   while ((m = tjRe.exec(raw)) !== null) results.push(m[1]);
+
+  // TJ array first (catches [<hex> <hex>] TJ and [(text)] TJ)
   const tjArrRe = /\[([^\]]*)\]\s*TJ/g;
   while ((m = tjArrRe.exec(raw)) !== null) {
     const inner = m[1].match(/\(([^)]*)\)/g);
     if (inner) for (const i of inner) results.push(i.slice(1, -1));
+    const innerHex = m[1].match(/<([0-9A-Fa-f]+)>/g);
+    if (innerHex) for (const i of innerHex) results.push(hexToUnicode(i.slice(1, -1)));
   }
+
+  // Hex strings before Tj (not inside TJ array): capture all <hex> blocks before Tj
+  const tjBlockRe = /(?:^|\s)((?:<[0-9A-Fa-f]+>\s*)+)\s*Tj/g;
+  while ((m = tjBlockRe.exec(raw)) !== null) {
+    const hexes = m[1].match(/<([0-9A-Fa-f]+)>/g);
+    if (hexes) for (const h of hexes) results.push(hexToUnicode(h.slice(1, -1)));
+  }
+
+  // BT...ET blocks fallback
+  if (results.length === 0) {
+    const btRe = /BT\s*([\s\S]*?)\s*ET/g;
+    while ((m = btRe.exec(raw)) !== null) {
+      const block = m[1];
+      const pRe = /\(([^)]*)\)/g;
+      let pm;
+      while ((pm = pRe.exec(block)) !== null) results.push(pm[1]);
+      const hRe = /<([0-9A-Fa-f]+)>/g;
+      let hm;
+      while ((hm = hRe.exec(block)) !== null) {
+        if (hm[1].length >= 4) results.push(hexToUnicode(hm[1]));
+      }
+    }
+  }
+
   return results.join(" ").trim();
 }
 
@@ -266,6 +307,7 @@ export async function extractDocumentText(env, fileId, fileName, mimeHint) {
   // PDF with OCR fallback
   if (sig.startsWith("%PDF") || (isPdf && !isDocx)) {
     let text = await extractPdfText(bytes);
+    console.log(`[PDF] extracted ${text.length} chars, first 200: ${text.slice(0, 200)}`);
     if (!text || text.length < 50 || isPdfImageBased(bytes)) {
       console.log("PDF scan detected, attempting OCR...");
       const ocrText = await ocrDocument(env, bytes, "application/pdf", fileName);
