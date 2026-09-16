@@ -186,30 +186,36 @@ export default {
       const PROVIDER_ID = (activeModelForId || "").split(":")[1] || "";
       const EXTERNAL_API_URL = resolveApiEndpoint(base_url, AI_MODEL, PROVIDER_ID);
 
+      // Step 1: Send "Thinking..." immediately
+      let thinkingMessageId = null;
       try {
-        const typingRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
+        const thinkingRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text: "Typing..." })
+          body: JSON.stringify({ chat_id: chatId, text: "🧠 Thinking..." })
         });
-        const typingData = await typingRes.json();
-        typingMessageId = typingData?.result?.message_id || null;
-        if (typingMessageId) {
-          typingTimer = setTimeout(async () => {
-            try {
-              await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/deleteMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: chatId, message_id: typingMessageId })
-              });
-            } catch {
-              // best effort
-            }
-          }, 30000);
-        }
+        const thinkingData = await thinkingRes.json();
+        thinkingMessageId = thinkingData?.result?.message_id || null;
       } catch {
         // best effort
       }
+
+      // Step 2: After 3s, edit to "Typing..."
+      let typingMessageId = null;
+      const typingTimer = setTimeout(async () => {
+        if (thinkingMessageId) {
+          try {
+            await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/editMessageText`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ chat_id: chatId, message_id: thinkingMessageId, text: "✍️ Typing..." })
+            });
+            typingMessageId = thinkingMessageId;
+          } catch {
+            // best effort
+          }
+        }
+      }, 3000);
 
       let history = await getChatMemory(env, chatId);
       if (history.length >= MEMORY_MAX_ENTRIES) {
@@ -350,10 +356,11 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
 
       if (typingTimer) {
         clearTimeout(typingTimer);
-        typingTimer = null;
       }
-      if (typingMessageId) {
-        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, typingMessageId);
+      // Delete both thinking and typing indicator messages
+      const msgToDelete = typingMessageId || thinkingMessageId;
+      if (msgToDelete) {
+        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, msgToDelete);
       }
 
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
@@ -361,8 +368,9 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       await saveChatMemory(env, chatId, history);
     } catch (err) {
       console.error(err);
-      if (typingMessageId) {
-        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, typingMessageId);
+      const cleanupMsg = typingMessageId || thinkingMessageId;
+      if (cleanupMsg) {
+        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, cleanupMsg);
       }
       try {
         const errMsg = err.message || "Unknown error";
