@@ -109,7 +109,8 @@ export default {
           const docTimeout = setTimeout(() => docController.abort(), 45000);
           let text;
           try {
-            text = await extractDocumentText(env, docInfo.file_id, fileName, hint);
+            text = await extractDocumentText(env, docInfo.file_id, fileName, hint, docController.signal);
+            console.log("[DOC] extraction result:", text ? text.length : 0, "chars");
           } finally {
             clearTimeout(docTimeout);
           }

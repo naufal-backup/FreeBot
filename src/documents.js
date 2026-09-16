@@ -457,7 +457,7 @@ function detectImageMime(bytes) {
   return null;
 }
 
-export async function extractDocumentText(env, fileId, fileName, mimeHint) {
+export async function extractDocumentText(env, fileId, fileName, mimeHint, signal) {
   // Download file from Telegram
   const fileRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/getFile`, {
     method: "POST",
@@ -468,11 +468,14 @@ export async function extractDocumentText(env, fileId, fileName, mimeHint) {
   const filePath = fileData?.result?.file_path;
   if (!filePath) throw new Error("File tidak ditemukan di Telegram.");
 
-  const dl = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_TOKEN}/${filePath}`);
+  const dl = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_TOKEN}/${filePath}`, { signal });
   if (!dl.ok) throw new Error("Gagal download file.");
 
   const buf = await dl.arrayBuffer();
   const bytes = new Uint8Array(buf);
+
+  console.log("[DOC] Downloaded:", fileName, bytes.length, "bytes, hint:", mimeHint);
+  console.log("[DOC] First 8 bytes:", Array.from(bytes.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' '));
 
   return localExtract(bytes, fileName, mimeHint, env);
 }
@@ -489,11 +492,16 @@ async function localExtract(bytes, fileName, mimeHint, env) {
   const isImage = /\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(nm) || hint.startsWith("image/");
 
   const sig = String.fromCharCode(...bytes.slice(0, 4));
+  console.log("[LOCAL] sig:", sig, "isPdf:", isPdf, "nm:", nm);
 
   if (sig.startsWith("%PDF") || (isPdf && !isDocx)) {
+    console.log("[LOCAL] Extracting PDF...");
     let text = await extractPdfText(bytes);
+    console.log("[LOCAL] PDF text:", text.length, "chars, imageBased:", isPdfImageBased(bytes));
     if (!text || text.length < 50 || isPdfImageBased(bytes)) {
+      console.log("[LOCAL] Trying OCR fallback...");
       const ocrText = await ocrDocument(env, bytes, "application/pdf", fileName);
+      console.log("[LOCAL] OCR result:", ocrText ? ocrText.length : 0, "chars");
       if (ocrText && ocrText.length > text.length) return ocrText;
     }
     return text || "(Teks tidak dapat diekstrak. PDF mungkin hasil scan.)";
