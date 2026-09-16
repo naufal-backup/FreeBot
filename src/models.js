@@ -43,20 +43,16 @@ export async function getActiveApi(env, chatId) {
 
 /**
  * Find which provider supports a given model name.
- * Searches all provider_configs and matches model against their models JSON array.
+ * Live-fetches models from each provider's API.
  */
 export async function findProviderForModel(env, modelName) {
   if (!env.DB) return null;
   try {
-    const rows = await env.DB.prepare("SELECT id, base_url, api_key, models FROM provider_configs").all();
+    const rows = await env.DB.prepare("SELECT id, base_url, api_key FROM provider_configs").all();
     for (const p of rows.results || []) {
-      try {
-        const models = JSON.parse(p.models || "[]");
-        if (models.includes(modelName)) {
-          return { provider_id: p.id, base_url: p.base_url, api_key: p.api_key };
-        }
-      } catch {
-        // skip invalid JSON
+      const liveModels = await fetchProviderModels(p.base_url, p.api_key);
+      if (liveModels && liveModels.some((m) => m.id === modelName || m.disp === modelName)) {
+        return { provider_id: p.id, base_url: p.base_url, api_key: p.api_key };
       }
     }
   } catch {
@@ -69,7 +65,7 @@ export async function getAllProviders(env) {
   const list = [];
   if (env.DB) {
     try {
-      const rows = await env.DB.prepare("SELECT id, base_url, api_key, label, models FROM provider_configs").all();
+      const rows = await env.DB.prepare("SELECT id, base_url, api_key, label FROM provider_configs").all();
       for (const p of rows.results || []) list.push(p);
     } catch {
       // ignore
@@ -98,20 +94,16 @@ export async function getAllModels(env) {
   const providers = await getAllProviders(env);
   const out = [];
   for (const p of providers) {
-    // Use models from D1 config first
-    try {
-      const configured = JSON.parse(p.models || "[]");
-      for (const m of configured) {
-        out.push({
-          real: m,
-          disp: m,
-          provider: p.id,
-          realLabel: m + ":" + p.id,
-          dispLabel: m + ":" + p.id
-        });
-      }
-    } catch {
-      // ignore
+    const list = await fetchProviderModels(p.base_url, p.api_key);
+    if (!list || !list.length) continue;
+    for (const m of list) {
+      out.push({
+        real: m.id,
+        disp: m.disp,
+        provider: p.id,
+        realLabel: m.id + ":" + p.id,
+        dispLabel: m.disp + ":" + p.id
+      });
     }
   }
   return out;
@@ -135,13 +127,10 @@ export async function buildModelChunks(env) {
   const chunks = [];
   const LIMIT = 3600;
   for (const p of providers) {
-    let models = [];
-    try {
-      models = JSON.parse(p.models || "[]");
-    } catch {}
-    if (!models.length) continue;
-    const lines = models.map((m) => "  " + m + ":" + p.id);
-    let buf = (p.label || p.id) + " (" + p.id + ") — " + models.length + " model\n";
+    const list = await fetchProviderModels(p.base_url, p.api_key);
+    if (!list || !list.length) continue;
+    const lines = list.map((m) => "  " + m.disp + ":" + p.id);
+    let buf = (p.label || p.id) + " (" + p.id + ") — " + list.length + " model\n";
     for (const line of lines) {
       if (buf.length + line.length + 1 > LIMIT) {
         chunks.push(buf.trimEnd());
