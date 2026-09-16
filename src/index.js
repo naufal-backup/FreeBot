@@ -267,6 +267,8 @@ Tool tersedia:
 - switch_model(model): ganti model AI sesi ini.
 - create_skill(tool_name, description, url_template, parameters, method): buat skill baru. method: GET/POST/PUT/DELETE. url_template: URL dengan {param} placeholder.
 - list_skills(): lihat semua skill custom.
+
+PENTING TOOL: Jika sudah punya jawaban dari tool sebelumnya, JANGAN panggil tool yang sama lagi. Langsung jawab. Jika tool gagal/error, jangan ulang — langsung jawab dengan info yang tersedia. Maksimal 3-4 tool calls per pesan.
 - delete_skill(tool_name): hapus skill custom.
 - newproject(name, template): buat project baru + repo GitHub. Konfirmasi dulu ke user.
 - purge_project(name): hapus project dari D1 (repo GitHub tetap ada). Konfirmasi dulu ke user.
@@ -285,6 +287,8 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
 
       let finalContent = "";
       let iterations = 0;
+      const toolCallHistory = []; // Track tool calls to detect loops
+
       while (iterations < MAX_TOOL_ITERATIONS) {
         const controller = new AbortController();
         const aiTimeout = setTimeout(() => controller.abort(), 60000);
@@ -325,7 +329,16 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           for (const tc of finalMsg.tool_calls) {
             const result = await executeTool(tc, env, chatId, fromId);
             messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+            // Detect loop: same tool name + same args = stuck
+            const callKey = `${tc.function?.name}:${tc.function?.arguments}`;
+            toolCallHistory.push(callKey);
+            const sameCount = toolCallHistory.filter((k) => k === callKey).length;
+            if (sameCount >= 3) {
+              finalContent = "Saya sepertinya stuck memanggil tool yang sama. Berikut jawaban berdasarkan apa yang sudah saya dapat:\n\n" + (finalMsg.content || "Coba jelaskan dengan lebih spesifik agar saya bisa bantu.");
+              break;
+            }
           }
+          if (finalContent) break;
           iterations++;
           continue;
         }
@@ -333,7 +346,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         finalContent = finalMsg.content || "Maaf, tidak ada respons.";
         break;
       }
-      if (!finalContent) finalContent = "Maaf, terlalu banyak iterasi tool. Coba jelaskan lebih spesifik.";
+      if (!finalContent) finalContent = "Terlalu banyak langkah tool. Coba jelaskan lebih singkat atau spesifik."; // safe fallback
 
       if (typingTimer) {
         clearTimeout(typingTimer);
