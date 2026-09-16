@@ -307,8 +307,15 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       let finalContent = "";
       let iterations = 0;
       const toolCallHistory = []; // Track tool calls to detect loops
+      const loopStartTime = Date.now();
+      const MAX_LOOP_TIME_MS = 30000; // 30 seconds max
 
       while (iterations < MAX_TOOL_ITERATIONS) {
+        // Auto-stop if loop takes too long
+        if (Date.now() - loopStartTime > MAX_LOOP_TIME_MS) {
+          finalContent = "Waktu pemrosesan habis. Coba jelaskan lebih singkat.";
+          break;
+        }
         const controller = new AbortController();
         const aiTimeout = setTimeout(() => controller.abort(), 60000);
         let externalRes;
