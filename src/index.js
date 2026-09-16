@@ -34,6 +34,13 @@ const chatQueues = new Map();
 // Per-chat cancellation flag — set by /stop, checked in AI loop
 const chatCancelled = new Map();
 
+function enqueueChatTask(chatId, task) {
+  const prev = chatQueues.get(chatId) || Promise.resolve();
+  const next = prev.then(task, task);
+  chatQueues.set(chatId, next.catch(() => {}));
+  return next;
+}
+
 export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runScheduledTasks(env, ctx));
