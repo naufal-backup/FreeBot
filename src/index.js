@@ -121,7 +121,7 @@ export default {
               text.trim().slice(0, 15000) +
               (userText ? "\n\nInstruksi user: " + userText : "\n\nRingkas isi dokumen ini.");
           } else {
-            userText = userText || 'Dokumen "' + (fileName || "dokumen") + '" tidak memuat teks yang bisa dibaca. (PDF hasil scan / terkompresi tidak bisa diekstrak.)';
+            userText = userText || 'Dokumen "' + (fileName || "dokumen") + '" tidak memuat teks yang bisa dibaca.';
           }
         } catch (err) {
           console.error("doc extract error:", err.message);

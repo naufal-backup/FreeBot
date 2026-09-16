@@ -1,9 +1,8 @@
-// src/documents.js
-// Text extraction for PDF, DOCX, HTML, TXT, MD, and image files.
-// Includes OCR fallback for scanned documents and images.
-// Supports FlateDecode compressed PDF streams and CMap-based encoding.
+// doc-to-md/src/documents.js
+// Document text extraction: PDF, DOCX, HTML, TXT, MD, images.
+// Includes OCR fallback and CMap-based PDF support.
 
-import { ocrDocument } from "./ocr.js";
+// ── Utilities ───────────────────────────────────────────────────────────────
 
 function findBytes(data, needle, start = 0) {
   for (let i = start; i <= data.length - needle.length; i++) {
@@ -41,19 +40,12 @@ async function decompressFlate(data) {
 }
 
 // ── CMap support ────────────────────────────────────────────────────────────
-// CMap maps character codes (hex in PDF streams) to Unicode code points.
-// Common in CIDFont-based PDFs (CJK, modern fonts).
 
 function parseCMap(text) {
   const cmap = new Map();
-
-  // beginbfchar: <srcHex> <dstHex>
-  // e.g. <0041> <0041> means code 0x0041 → U+0041 (A)
-  const bfCharRe = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
   let section = null;
-  let m;
-
   const lines = text.split("\n");
+
   for (const line of lines) {
     if (line.includes("beginbfchar")) { section = "char"; continue; }
     if (line.includes("endbfchar")) { section = null; continue; }
@@ -63,15 +55,11 @@ function parseCMap(text) {
     if (section === "char") {
       const chM = line.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/);
       if (chM) {
-        const src = parseInt(chM[1], 16);
-        const dst = parseInt(chM[2], 16);
-        cmap.set(src, String.fromCodePoint(dst));
+        cmap.set(parseInt(chM[1], 16), String.fromCodePoint(parseInt(chM[2], 16)));
       }
     }
 
     if (section === "range") {
-      // Format: <startCode> <endCode> <startUnicode>
-      // e.g. <0041> <005A> <0041> → codes 0x41-0x5A map to U+0041-U+005A (A-Z)
       const rangeM = line.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/);
       if (rangeM) {
         const startCode = parseInt(rangeM[1], 16);
@@ -91,8 +79,8 @@ function parseCMap(text) {
 async function extractCMapsFromPdf(data) {
   const decoder = new TextDecoder("utf-8");
   const merged = new Map();
-  const streamMarker = new Uint8Array([115, 116, 114, 97, 101, 109]); // "stream"
-  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]); // "endstream"
+  const streamMarker = new Uint8Array([115, 116, 114, 97, 101, 109]);
+  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]);
 
   let pos = 0;
   while (pos < data.length) {
@@ -112,14 +100,12 @@ async function extractCMapsFromPdf(data) {
 
     const streamBytes = data.slice(dataStart, dataEnd);
 
-    // Try decompressing ALL FlateDecode streams and check for CMap content
     if (dictSlice.includes("FlateDecode")) {
       const decompressed = await decompressFlate(streamBytes);
       if (decompressed) {
         const streamText = decoder.decode(decompressed);
         if (streamText.includes("beginbfchar") || streamText.includes("beginbfrange")) {
           const cmap = parseCMap(streamText);
-          console.log("[CMap] Found CMap stream with", cmap.size, "entries");
           for (const [k, v] of cmap) merged.set(k, v);
         }
       }
@@ -131,36 +117,24 @@ async function extractCMapsFromPdf(data) {
   return merged;
 }
 
-// ── Hex → Unicode with CMap support ─────────────────────────────────────────
+// ── Hex → Unicode with CMap ─────────────────────────────────────────────────
 
 function hexToUnicode(hex, cmap) {
-  // Convert hex string to unicode text using CMap if available.
-  // PDF hex: pairs of 2 hex digits per byte. Common patterns:
-  //   4 hex digits (2 bytes) → character code
-  //   2 hex digits (1 byte)  → character code (single-byte font)
-
   const results = [];
-  // PDF hex strings are pairs of hex digits: "0041" = code 0x0041
-  // They can be 2-digit (1 byte), 4-digit (2 bytes), or 6-digit (3 bytes)
-  const chunkSize = hex.length <= 4 ? 2 : 4; // auto-detect byte width
 
   if (cmap && cmap.size > 0) {
-    // Use CMap: treat entire hex string as a sequence of character codes
-    // Try 4-digit chunks first (2-byte CID fonts)
     if (hex.length % 4 === 0) {
       for (let i = 0; i < hex.length; i += 4) {
         const code = parseInt(hex.slice(i, i + 4), 16);
         results.push(cmap.get(code) || String.fromCodePoint(code));
       }
     } else {
-      // Fallback: try 2-digit chunks (1-byte fonts)
       for (let i = 0; i < hex.length; i += 2) {
         const code = parseInt(hex.slice(i, i + 2), 16);
         results.push(cmap.get(code) || String.fromCodePoint(code));
       }
     }
   } else {
-    // No CMap — direct code point mapping
     if (hex.length % 4 === 0) {
       for (let i = 0; i < hex.length; i += 4) {
         const code = parseInt(hex.slice(i, i + 4), 16);
@@ -185,7 +159,7 @@ function extractTextFromRaw(raw, cmap) {
   const tjRe = /\(([^)]*)\)\s*Tj/g;
   while ((m = tjRe.exec(raw)) !== null) results.push(m[1]);
 
-  // TJ array first (catches [<hex> <hex>] TJ and [(text)] TJ)
+  // TJ array (catches [<hex> <hex>] TJ and [(text)] TJ)
   const tjArrRe = /\[([^\]]*)\]\s*TJ/g;
   while ((m = tjArrRe.exec(raw)) !== null) {
     const inner = m[1].match(/\(([^)]*)\)/g);
@@ -194,7 +168,7 @@ function extractTextFromRaw(raw, cmap) {
     if (innerHex) for (const i of innerHex) results.push(hexToUnicode(i.slice(1, -1), cmap));
   }
 
-  // Hex strings before Tj (not inside TJ array): capture all <hex> blocks before Tj
+  // Hex strings before Tj
   const tjBlockRe = /(?:^|\s)((?:<[0-9A-Fa-f]+>\s*)+)\s*Tj/g;
   while ((m = tjBlockRe.exec(raw)) !== null) {
     const hexes = m[1].match(/<([0-9A-Fa-f]+)>/g);
@@ -220,31 +194,21 @@ function extractTextFromRaw(raw, cmap) {
   return results.join(" ").trim();
 }
 
+// ── PDF extraction ──────────────────────────────────────────────────────────
+
 export async function extractPdfText(data) {
   const decoder = new TextDecoder("utf-8");
-  const raw = decoder.decode(data);
-  const debug = [];
 
-  debug.push("[PDF EXTRACT LOG]");
-  debug.push("Size: " + data.length + " bytes");
-
-  // Step 0: extract CMap (character code → Unicode mapping)
+  // Step 0: extract CMap
   const cmap = await extractCMapsFromPdf(data);
-  debug.push("CMap entries: " + cmap.size);
 
-  // Step 1: skip raw regex — raw PDF bytes are not valid text
-  // Only extract from properly decompressed streams
-
-  // Step 2: find compressed streams, decompress, extract
-  const streamMarker = new Uint8Array([115, 116, 114, 101, 97, 109]); // "stream"
-  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]); // "endstream"
+  // Step 1: find compressed streams, decompress, extract
+  const streamMarker = new Uint8Array([115, 116, 114, 101, 97, 109]);
+  const endstreamMarker = new Uint8Array([101, 110, 100, 115, 116, 114, 97, 101, 109]);
   const flateFilter = "FlateDecode";
 
   let pos = 0;
   const allResults = [];
-  let streamCount = 0;
-  let flateCount = 0;
-  let decompressOk = 0;
 
   while (pos < data.length) {
     const streamIdx = findBytes(data, streamMarker, pos);
@@ -253,16 +217,12 @@ export async function extractPdfText(data) {
     const endIdx = findBytes(data, endstreamMarker, streamIdx + 6);
     if (endIdx === -1) break;
 
-    streamCount++;
-
-    // Check dictionary before stream for FlateDecode
     const dictSearchStart = Math.max(0, streamIdx - 2000);
     const dictSlice = decoder.decode(data.slice(dictSearchStart, streamIdx));
 
-    // Extract stream data bytes
     let dataStart = streamIdx + 6;
-    if (data[dataStart] === 13) dataStart++; // skip \r
-    if (data[dataStart] === 10) dataStart++; // skip \n
+    if (data[dataStart] === 13) dataStart++;
+    if (data[dataStart] === 10) dataStart++;
 
     let dataEnd = endIdx;
     while (dataEnd > dataStart && (data[dataEnd - 1] === 10 || data[dataEnd - 1] === 13)) dataEnd--;
@@ -270,52 +230,33 @@ export async function extractPdfText(data) {
     const streamBytes = data.slice(dataStart, dataEnd);
 
     if (dictSlice.includes(flateFilter)) {
-      flateCount++;
       const decompressed = await decompressFlate(streamBytes);
 
       if (decompressed) {
-        decompressOk++;
         const decompRaw = decoder.decode(decompressed);
-        const hasBT = decompRaw.includes("BT");
-        const hasET = decompRaw.includes("ET");
-        const hasTj = decompRaw.includes("Tj");
-        const hasTJ = decompRaw.includes("TJ");
-        debug.push("S" + decompressOk + ": " + decompRaw.length + "ch BT:" + hasBT + " ET:" + hasET + " Tj:" + hasTj + " TJ:" + hasTJ);
-        if (decompRaw.length < 300) debug.push("  content: " + decompRaw.slice(0, 200));
 
-        // Only extract from decompressed content that looks like PDF operators
-        if (hasBT && hasET) {
+        if (decompRaw.includes("BT") && decompRaw.includes("ET")) {
           const decompText = extractTextFromRaw(decompRaw, cmap);
-          if (decompText && decompText.length > 10) {
-            allResults.push(decompText);
-            debug.push("  extracted: " + decompText.length + " chars");
-          }
+          if (decompText && decompText.length > 10) allResults.push(decompText);
         }
 
-        // Also try BT...ET blocks in decompressed data
+        // BT...ET blocks
         const btRe = /BT\s*([\s\S]*?)\s*ET/g;
         let bm;
-        let btCount = 0;
         while ((bm = btRe.exec(decompRaw)) !== null) {
-          btCount++;
           const lines = bm[1].match(/\(([^)]*)\)/g);
           if (lines) {
             const btText = lines.map(l => l.slice(1, -1)).join(" ").trim();
             if (btText && btText.length > 5) allResults.push(btText);
           }
-          // Also try hex in BT blocks
           const hexRe = /<([0-9A-Fa-f]+)>/g;
           let hm;
           while ((hm = hexRe.exec(bm[1])) !== null) {
             if (hm[1].length >= 4) allResults.push(hexToUnicode(hm[1], cmap));
           }
         }
-        debug.push("  BT blocks: " + btCount);
-      } else {
-        debug.push("S" + flateCount + ": DECOMP FAIL size=" + streamBytes.length);
       }
     } else if (!dictSlice.includes("DCTDecode") && !dictSlice.includes("JPXDecode")) {
-      // Try raw text extraction for non-compressed, non-image streams
       const rawText = decoder.decode(streamBytes);
       if (rawText.includes("BT") && rawText.includes("ET")) {
         const text = extractTextFromRaw(rawText, cmap);
@@ -326,25 +267,19 @@ export async function extractPdfText(data) {
     pos = endIdx + 9;
   }
 
-  debug.push("Summary: streams=" + streamCount + " flate=" + flateCount + " decompressed=" + decompressOk + " results=" + allResults.length);
-
-  const combined = allResults.join("\n").trim();
-  debug.push("Final text: " + combined.length + " chars");
-  if (combined.length > 0) debug.push("First 300: " + combined.slice(0, 300));
-  debug.push("[END LOG]");
-
-  return { text: combined || "", debug: debug.join("\n") };
+  return allResults.join("\n").trim() || "";
 }
 
 function isPdfImageBased(data) {
   const decoder = new TextDecoder("utf-8");
   const raw = decoder.decode(data);
   const hasImage = /\/Subtype\s*\/Image/.test(raw);
-  const hasXObject = /\/XObject/.test(raw);
   const hasDCTDecode = /\/Filter\s*\/DCTDecode/.test(raw);
-  const hasFlateWithImage = /\/Filter\s*\/FlateDecode/.test(raw) && hasImage;
-  return hasImage || hasXObject || hasDCTDecode || hasFlateWithImage;
+  const hasJPXDecode = /\/Filter\s*\/JPXDecode/.test(raw);
+  return hasImage || hasDCTDecode || hasJPXDecode;
 }
+
+// ── DOCX extraction ─────────────────────────────────────────────────────────
 
 export function extractDocxText(data) {
   try {
@@ -352,25 +287,18 @@ export function extractDocxText(data) {
     let offset = 0;
     const files = {};
     while (offset + 30 < data.length) {
-      if (view.getUint32(offset, true) !== 0x04034b50) {
-        offset++;
-        continue;
-      }
+      if (view.getUint32(offset, true) !== 0x04034b50) { offset++; continue; }
       const compressedSize = view.getUint32(offset + 18, true);
       const fileNameLen = view.getUint16(offset + 26, true);
       const extraLen = view.getUint16(offset + 28, true);
       const nameOff = offset + 30;
       const name = new TextDecoder().decode(data.slice(nameOff, nameOff + fileNameLen));
       const dataOff = nameOff + fileNameLen + extraLen;
-      const compData = data.slice(dataOff, dataOff + compressedSize);
-      files[name] = compData;
+      files[name] = data.slice(dataOff, dataOff + compressedSize);
       offset = dataOff + compressedSize;
     }
 
-    const docXml =
-      files["word/document.xml"] ||
-      files["word/document2.xml"] ||
-      Object.values(files).find((v, k) => k.includes("document.xml"));
+    const docXml = files["word/document.xml"] || Object.values(files).find((v, k) => k.includes("document.xml"));
     if (!docXml) return "(Tidak ditemukan word/document.xml dalam DOCX.)";
 
     const xml = new TextDecoder("utf-8", { fatal: false }).decode(docXml);
@@ -386,38 +314,34 @@ export function extractDocxText(data) {
   }
 }
 
-/**
- * Extract text from HTML by stripping tags and decoding entities.
- */
+// ── HTML extraction ─────────────────────────────────────────────────────────
+
 export function extractHtmlText(data) {
   try {
     let html = new TextDecoder("utf-8", { fatal: false }).decode(data);
 
-    // Remove script and style blocks
+    // Remove script, style, head
     html = html.replace(/<script[\s\S]*?<\/script>/gi, "");
     html = html.replace(/<style[\s\S]*?<\/style>/gi, "");
     html = html.replace(/<head[\s\S]*?<\/head>/gi, "");
 
     // Convert block elements to newlines
-    html = html.replace(/<(br|hr)\s*\/?>/gi, "\n");
-    html = html.replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, "\n");
-    html = html.replace(/<li[\s\S]*?<\/li>/gi, (m) => "- " + m.replace(/<[^>]+>/g, "").trim() + "\n");
+    html = html.replace(/<\/(p|div|h[1-6]|li|tr|br\s*\/?)>/gi, "\n");
+    html = html.replace(/<br\s*\/?>/gi, "\n");
 
     // Remove all remaining HTML tags
-    html = html.replace(/<[^>]+>/g, "");
+    html = html.replace(/<[^>]+>/g, " ");
 
-    // Decode common HTML entities
+    // Decode HTML entities
     html = html
+      .replace(/&nbsp;/g, " ")
       .replace(/&amp;/g, "&")
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
       .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+      .replace(/&#([0-9]+);/g, (_, num) => String.fromCharCode(parseInt(num)))
       .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 
-    // Collapse whitespace
     html = html.replace(/[ \t]+/g, " ");
     html = html.replace(/\n\s*\n/g, "\n\n");
 
@@ -427,9 +351,8 @@ export function extractHtmlText(data) {
   }
 }
 
-/**
- * Extract text from plain text / markdown (just decode).
- */
+// ── Plain text ──────────────────────────────────────────────────────────────
+
 export function extractPlainText(data) {
   try {
     return new TextDecoder("utf-8", { fatal: false }).decode(data).trim();
@@ -438,9 +361,8 @@ export function extractPlainText(data) {
   }
 }
 
-/**
- * Detect image MIME type from file signature.
- */
+// ── Image MIME detection ────────────────────────────────────────────────────
+
 function detectImageMime(bytes) {
   const sig = String.fromCharCode(...bytes.slice(0, 4));
   if (sig.startsWith("\x89PNG")) return "image/png";
@@ -453,56 +375,33 @@ function detectImageMime(bytes) {
   return null;
 }
 
-export async function extractDocumentText(env, fileId, fileName, mimeHint) {
-  // Download file from Telegram
-  const fileRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/getFile`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_id: fileId })
-  });
-  const fileData = await fileRes.json();
-  const filePath = fileData?.result?.file_path;
-  if (!filePath) throw new Error("File tidak ditemukan di Telegram.");
+// ── OCR via Cloudflare Workers AI ───────────────────────────────────────────
 
-  const dl = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_TOKEN}/${filePath}`);
-  if (!dl.ok) throw new Error("Gagal download file.");
-
-  const buf = await dl.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-
-  // Try doc-to-md worker via service binding first
-  if (env.DOC_TO_MD) {
-    try {
-      // Convert to base64
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const base64 = btoa(binary);
-
-      const resp = await env.DOC_TO_MD.fetch(new Request("https://doc-to-md.internal/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_name: fileName,
-          mime_type: mimeHint || "",
-          file_bytes: base64
-        })
-      }));
-
-      const result = await resp.json();
-      if (result.text) return result.text;
-      if (result.error) throw new Error(result.error);
-    } catch (err) {
-      console.error("[DOC_TO_MD] Worker failed, falling back to local:", err.message);
-    }
+async function ocrDocument(env, bytes, mimeType, fileName) {
+  try {
+    const input = { image: [...bytes.slice(0, 1048576)] };
+    const response = await env.AI.run("@cf/meta/llama-3.2-11b-vision-instruct", {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", image: input.image },
+            { type: "text", text: "Extract ALL text from this document image. Output ONLY the text content, preserving original formatting and structure (headings, paragraphs, lists, tables). Do NOT add any commentary or descriptions." }
+          ]
+        }
+      ],
+      max_tokens: 4096
+    });
+    return response?.response || "";
+  } catch (err) {
+    console.error("OCR failed:", err.message);
+    return "";
   }
-
-  // Local fallback: extract directly
-  return localExtract(bytes, fileName, mimeHint, env);
 }
 
-async function localExtract(bytes, fileName, mimeHint, env) {
+// ── Main extraction function ────────────────────────────────────────────────
+
+export async function extractDocumentText(env, bytes, fileName, mimeHint) {
   const nm = (fileName || "").toLowerCase();
   const hint = (mimeHint || "").toLowerCase();
 
@@ -515,6 +414,7 @@ async function localExtract(bytes, fileName, mimeHint, env) {
 
   const sig = String.fromCharCode(...bytes.slice(0, 4));
 
+  // PDF with OCR fallback
   if (sig.startsWith("%PDF") || (isPdf && !isDocx)) {
     let text = await extractPdfText(bytes);
     if (!text || text.length < 50 || isPdfImageBased(bytes)) {
@@ -524,6 +424,7 @@ async function localExtract(bytes, fileName, mimeHint, env) {
     return text || "(Teks tidak dapat diekstrak. PDF mungkin hasil scan.)";
   }
 
+  // DOCX with OCR fallback
   if (sig.startsWith("PK") && (isDocx || !isPdf)) {
     let text = extractDocxText(bytes);
     if (!text || text.length < 30) {
@@ -533,20 +434,24 @@ async function localExtract(bytes, fileName, mimeHint, env) {
     return text || "(Teks kosong atau DOCX berisi gambar)";
   }
 
+  // Images → always OCR
   if (isImage || detectImageMime(bytes)) {
     const imgMime = detectImageMime(bytes) || "image/png";
     const ocrText = await ocrDocument(env, bytes, imgMime, fileName);
     return ocrText || "(Tidak dapat membaca teks dari gambar.)";
   }
 
+  // HTML
   if (isHtml || sig.startsWith("<!D") || sig.startsWith("<htm")) {
     return extractHtmlText(bytes) || "(HTML kosong atau tidak memiliki teks.)";
   }
 
+  // Markdown / Plain text
   if (isMd || isTxt) {
     return extractPlainText(bytes) || "(File kosong.)";
   }
 
+  // Fallback: try as text
   const fallback = extractPlainText(bytes);
   if (fallback && fallback.length > 10) return fallback;
 
