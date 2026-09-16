@@ -3,9 +3,11 @@
 
 import { sendTelegram } from "../telegram.js";
 import { getActiveModel, setActiveModel, resolveModelLabel, sendModelList } from "../models.js";
+import { getCavemanMode, setCavemanMode } from "../storage.js";
+import { getCustomTools, deleteCustomTool } from "../skills.js";
 
 const HELP_TEXT =
-  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model sesi\n/models - daftar model\n/reset - hapus memori chat sesi\n/myid - lihat Telegram ID kamu\n/newproject <nama> [template] - buat project (worker-hello|worker-api|ai-chat) + repo GitHub\n/projects - list project\n/storage - status D1\n/cleanup - rekomendasi hapus (FILO)\n/purge <nama> yes - hapus dari D1\n/need-supabase <nama> - buat project Supabase\n/login-gh /token-gh <pat> /gh-status /logout-gh - kelola GitHub\n/login-sb /token-sb <pat> /sb-status /logout-sb - kelola Supabase\n/changeapi <url> <key> - ganti API sekaligus (provider + key)\n/changeprovider <url> - ganti provider, key tetap\n/changekey <key> - ganti key, provider tetap\n/api-status - lihat API aktif\n/resetapi - kembali ke default\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, atau gambar (OCR otomatis).\nKetik teks bebas untuk chat AI.";
+  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model sesi\n/models - daftar model\n/reset - hapus memori chat sesi\n/myid - lihat Telegram ID kamu\n/caveman - toggle mode hemat token\n/skills - lihat skill custom\n/delskill <nama> - hapus skill custom\n/newproject <nama> [template] - buat project (worker-hello|worker-api|ai-chat) + repo GitHub\n/projects - list project\n/storage - status D1\n/cleanup - rekomendasi hapus (FILO)\n/purge <nama> yes - hapus dari D1\n/need-supabase <nama> - buat project Supabase\n/login-gh /token-gh <pat> /gh-status /logout-gh - kelola GitHub\n/login-sb /token-sb <pat> /sb-status /logout-sb - kelola Supabase\n/changeapi <url> <key> - ganti API sekaligus (provider + key)\n/changeprovider <url> - ganti provider, key tetap\n/changekey <key> - ganti key, provider tetap\n/api-status - lihat API aktif\n/resetapi - kembali ke default\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, atau gambar (OCR otomatis).\nKetik teks bebas untuk chat AI.\nBuat skill baru: bilang \"buatkan tool...\" lalu konfirmasi.";
 
 export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, messageId) {
   if (cmdWord === "/start") {
@@ -50,6 +52,39 @@ export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, 
       await env.DB.prepare("DELETE FROM chat_memory WHERE chat_id = ?").bind(String(chatId)).run();
     }
     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "\u2705 Memori chat dihapus.");
+    return true;
+  }
+
+  if (cmdWord === "/caveman") {
+    const current = await getCavemanMode(env, chatId);
+    let newState;
+    if (cmdArg === "on") newState = true;
+    else if (cmdArg === "off") newState = false;
+    else newState = !current;
+    await setCavemanMode(env, chatId, newState);
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, newState ? "Caveman mode: ON (jawaban hemat token)" : "Caveman mode: OFF (jawaban normal)");
+    return true;
+  }
+
+  if (cmdWord === "/skills") {
+    const tools = await getCustomTools(env, chatId);
+    if (!tools.length) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Belum ada skill custom.\nBuat baru: bilang \"buatkan tool...\" atau \"buatkan skill...\"");
+    } else {
+      const list = tools.map((t) => `- ${t.tool_name}: ${t.description}`).join("\n");
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Skill custom (${tools.length}):\n${list}`);
+    }
+    return true;
+  }
+
+  if (cmdWord === "/delskill") {
+    const toolName = cmdArg.trim();
+    if (!toolName) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /delskill <nama_skill>");
+      return true;
+    }
+    const deleted = await deleteCustomTool(env, chatId, toolName);
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, deleted ? `Skill "${toolName}" dihapus.` : `Skill "${toolName}" tidak ditemukan.`);
     return true;
   }
 

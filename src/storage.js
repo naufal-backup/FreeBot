@@ -43,6 +43,23 @@ export async function saveChatMemory(env, chatId, history) {
   }
 }
 
+// --- Caveman mode per-chat preference ---
+
+export async function getCavemanMode(env, chatId) {
+  if (!env.DB) return false;
+  const row = await env.DB.prepare("SELECT caveman_mode FROM user_preferences WHERE chat_id = ?")
+    .bind(String(chatId)).first();
+  return row?.caveman_mode === 1;
+}
+
+export async function setCavemanMode(env, chatId, enabled) {
+  if (!env.DB) return false;
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO user_preferences (chat_id, caveman_mode) VALUES (?, ?)"
+  ).bind(String(chatId), enabled ? 1 : 0).run();
+  return true;
+}
+
 export async function summarizeHistory(env, model, history) {
   try {
     const { base_url, api_key } = await getActiveApi(env);

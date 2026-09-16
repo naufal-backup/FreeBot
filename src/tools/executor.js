@@ -15,6 +15,7 @@ import {
   readRepoFile
 } from "../github.js";
 import { getServiceToken, getStorageUsage } from "../storage.js";
+import { saveCustomTool, getCustomTools, deleteCustomTool, executeCustomTool } from "../skills.js";
 import { getAllModels, resolveModelLabel, setActiveModel } from "../models.js";
 import { renderTemplate } from "../templates.js";
 
@@ -457,7 +458,47 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         }
       }
 
+      // --- Custom skill tools (dynamic from D1) ---
+      case "create_skill": {
+        const toolName = (args.tool_name || "").toLowerCase().replace(/[^a-z0-9_]/g, "_");
+        const description = args.description || "";
+        const urlTemplate = args.url_template || "";
+        if (!toolName || !description || !urlTemplate) return "tool_name, description, dan url_template wajib diisi.";
+        if (!/^https:\/\//.test(urlTemplate)) return "URL harus diawali https://";
+        const ok = await saveCustomTool(env, chatId, {
+          tool_name: toolName,
+          description,
+          parameters: args.parameters || { type: "object", properties: {} },
+          method: args.method || "GET",
+          url_template: urlTemplate,
+          headers: args.headers || null
+        });
+        if (!ok) return "Gagal menyimpan skill.";
+        return `Skill "${tool_name}" berhasil dibuat! Sekarang bisa digunakan.`;
+      }
+
+      case "list_skills": {
+        const tools = await getCustomTools(env, chatId);
+        if (!tools.length) return "Belum ada skill custom.";
+        return tools.map((t) => `- ${t.tool_name}: ${t.description} [${t.method} ${t.url_template.slice(0, 50)}]`).join("\n");
+      }
+
+      case "delete_skill": {
+        const toolName = args.tool_name || "";
+        if (!toolName) return "tool_name wajib diisi.";
+        const deleted = await deleteCustomTool(env, chatId, toolName);
+        return deleted ? `Skill "${toolName}" dihapus.` : `Skill "${toolName}" tidak ditemukan.`;
+      }
+
       default:
+        // Check if this is a dynamic custom tool (prefix: custom_)
+        if (name.startsWith("custom_")) {
+          const customName = name.slice(7); // remove "custom_" prefix
+          const tools = await getCustomTools(env, chatId);
+          const toolDef = tools.find((t) => t.tool_name === customName);
+          if (!toolDef) return `Custom tool "${customName}" tidak ditemukan.`;
+          return await executeCustomTool(toolDef, args);
+        }
         return `Tool "${name}" tidak dikenal.`;
     }
   } catch (err) {

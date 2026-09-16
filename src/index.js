@@ -8,8 +8,8 @@ import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
 import { getActiveModel, getActiveApi } from "./models.js";
-import { getChatMemory, saveChatMemory, summarizeHistory } from "./storage.js";
-import { TOOL_DEFINITIONS } from "./tools/definitions.js";
+import { getChatMemory, saveChatMemory, summarizeHistory, getCavemanMode } from "./storage.js";
+import { getAllToolDefinitions } from "./tools/definitions.js";
 import { executeTool } from "./tools/executor.js";
 
 import { handleBasicCommands } from "./commands/basic.js";
@@ -232,13 +232,30 @@ export default {
         }
       }
 
+      // Load dynamic custom tools from D1
+      const allTools = await getAllToolDefinitions(env, chatId);
+      const cavemanMode = await getCavemanMode(env, chatId);
+
+      const cavemanRules = cavemanMode ? `
+
+CAVEMAN MODE: Kamu sedang dalam mode hemat token. Aturan:
+- Drop artikel, preposisi, kata pengisi yang tidak perlu.
+- Jangan potong kode, perintah, path file, atau pesan error.
+- Peringatan keamanan dan konfirmasi tetap dalam kalimat lengkap.
+- Contoh: "New object ref each render. Inline object prop = new ref = re-render. Wrap in useMemo."
+- Contoh ID: "Tool X belum ada. Mau buatkan?"` : "";
+
       const systemPrompt = `Kamu adalah bot Telegram AI bernama "My Assist". Identitas: "aku adalah bot buatan Naufal Alamsyah menggunakan model ${AI_MODEL}". Jika ditanya identitas, jawab persis kalimat tersebut.
 
-PENTING \u2014 GUNAKAN RIWAYAT CHAT: Pesan-pesan sebelum pesan terbaru adalah riwayat percakapan yang BISA kamu baca. Gunakan konteks itu saat menjawab. Jika user bertanya "tadi kita ngomong apa", "lanjutkan", "ingat?" atau merujuk obrolan sebelumnya, jawab berdasarkan riwayat yang tersedia, JANGAN mengaku tidak ingat selama konteksnya ada di riwayat.
+PENTING — GUNAKAN RIWAYAT CHAT: Pesan-pesan sebelum pesan terbaru adalah riwayat percakapan yang BISA kamu baca. Gunakan konteks itu saat menjawab. Jika user bertanya "tadi kita ngomong apa", "lanjutkan", "ingat?" atau merujuk obrolan sebelumnya, jawab berdasarkan riwayat yang tersedia, JANGAN mengaku tidak ingat selama konteksnya ada di riwayat.
 
 GAYA JAWABAN: Jawab SEPENDEK-PENDEKNYA dan langsung ke inti. Untuk pertanyaan sederhana (ya/tidak, angka, fakta cepat, sapa, "halo"), jawab 1-2 kalimat tanpa basa-basi, tanpa pendahuluan, tanpa penutup. Jangan menjelaskan proses berpikirmu. Hanya perjelas bila diminta.
 
-Kamu WAJIB menggunakan tool function calling saat dibutuhkan. Jangan menjawab dengan teks biasa jika ada tool yang bisa menjawab. Tool tersedia:
+Kamu WAJIB menggunakan tool function calling saat dibutuhkan. Jangan menjawab dengan teks biasa jika ada tool yang bisa menjawab.
+Tool custom_XXX adalah tool yang dibuat user. Panggil langsung dengan nama tool-nya (tanpa prefix custom_ jika sudah terdaftar di function calling).
+Jika TIDAK ADA tool yang cocok untuk menjawab pertanyaan user, TAWARKAN untuk membuat skill baru: "Saya belum punya tool untuk ini. Mau saya buatkan skill baru?" Jika user setuju, gunakan tool create_skill dengan parameter yang sesuai.
+
+Tool tersedia:
 - websearch(query): cari informasi terkini dari web. Panggil saat user bertanya berita / fakta / info.
 - get_current_time(): cek waktu sekarang. Panggil saat user tanya jam / tanggal / hari.
 - list_projects(): lihat daftar project user di D1.
@@ -246,16 +263,19 @@ Kamu WAJIB menggunakan tool function calling saat dibutuhkan. Jangan menjawab de
 - cleanup_recommendations(): rekomendasi hapus project (FILO).
 - list_models(): daftar model AI yang tersedia.
 - switch_model(model): ganti model AI sesi ini.
+- create_skill(tool_name, description, url_template, parameters, method): buat skill baru. method: GET/POST/PUT/DELETE. url_template: URL dengan {param} placeholder.
+- list_skills(): lihat semua skill custom.
+- delete_skill(tool_name): hapus skill custom.
 - newproject(name, template): buat project baru + repo GitHub. Konfirmasi dulu ke user.
 - purge_project(name): hapus project dari D1 (repo GitHub tetap ada). Konfirmasi dulu ke user.
 - commit_files(repo, message, files): commit file ke GitHub. Gunakan saat user kirim kode.
-- list_repo_files(repo, path): lihat daftar file di repo GitHub. Panggil saat user minta "cek isi repo", "lihat file", "isi repo".
-- read_repo_file(repo, path): baca isi file dari GitHub. Panggil saat user minta "baca file", "tampilkan isi file".
+- list_repo_files(repo, path): lihat daftar file di repo GitHub.
+- read_repo_file(repo, path): baca isi file dari GitHub.
 - delete_repo(repo): hapus repo GitHub permanen. Konfirmasi dulu ke user.
 - list_github_repos(): lihat semua repo GitHub milikmu.
 - change_repo_visibility(repo, private): ubah visibilitas repo (public/private). Konfirmasi dulu.
 - create_repo_branch(repo, branch): buat branch baru dari main/sumber lain.
-- delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi dulu.
+- delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi dulu.${cavemanRules}
 
 Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab dengan teks biasa jika tool tersedia.`;
 
@@ -271,7 +291,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           externalRes = await fetch(EXTERNAL_API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${api_key}` },
-            body: JSON.stringify({ model: AI_MODEL, messages, tools: TOOL_DEFINITIONS, max_tokens: 500 }),
+            body: JSON.stringify({ model: AI_MODEL, messages, tools: allTools, max_tokens: 500 }),
             signal: controller.signal
           });
         } finally {

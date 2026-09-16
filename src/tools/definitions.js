@@ -1,5 +1,8 @@
 // src/tools/definitions.js
 // OpenAI-compatible function-calling tool schema exposed to the AI model.
+// Includes both static tools and dynamic custom tools from D1.
+
+import { getCustomTools, buildDynamicToolSchemas } from "../skills.js";
 
 export const TOOL_DEFINITIONS = [
   {
@@ -325,3 +328,15 @@ export const TOOL_DEFINITIONS = [
     }
   }
 ];
+
+/**
+ * Merge static tool definitions with dynamic custom tools from D1.
+ * @param {D1Database} db
+ * @param {string} chatId
+ * @returns {Promise<Array>} combined tool schemas for OpenAI API
+ */
+export async function getAllToolDefinitions(env, chatId) {
+  const customTools = await getCustomTools(env, chatId);
+  const dynamicSchemas = buildDynamicToolSchemas(customTools);
+  return [...TOOL_DEFINITIONS, ...dynamicSchemas];
+}
