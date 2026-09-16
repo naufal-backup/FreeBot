@@ -16,21 +16,49 @@ export async function ocrImage(env, imageData, filename) {
   }
 
   try {
-    const blob = new Blob([imageData], { type: "image/png" });
+    let binary = "";
+    const bytes = new Uint8Array(imageData);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+
+    const sig = String.fromCharCode(...bytes.slice(0, 4));
+    let mime = "image/png";
+    if (sig.startsWith("\xFF\xD8\xFF")) mime = "image/jpeg";
+    else if (sig.startsWith("RIFF")) mime = "image/webp";
+    else if (sig.startsWith("GIF8")) mime = "image/gif";
+
     const result = await env.AI.run(
-      "@cf/microsoft/resnet-50",
-      { image: blob }
+      "@cf/meta/llama-3.2-11b-vision-instruct",
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                image: `data:${mime};base64,${base64}`
+              },
+              {
+                type: "text",
+                text: "Extract ALL text from this image. Return the text exactly as it appears, preserving formatting and structure. If there are tables, convert them to plain text. Do not add any commentary."
+              }
+            ]
+          }
+        ],
+        max_tokens: 4000
+      }
     );
 
     if (!result || !result.choices || !result.choices[0]) {
       return null;
     }
 
-    // Vision model returns description - use it as OCR result
-    const description = result.choices[0].message?.content || "";
-    return description.trim() || null;
+    const text = result.choices[0].message?.content || "";
+    return text.trim() || null;
   } catch (err) {
-    console.error("OCR vision error:", err.message);
+    console.error("OCR image error:", err.message);
     return null;
   }
 }

@@ -201,12 +201,16 @@ export async function extractDocumentText(env, fileId, fileName, mimeHint) {
     return text || "(Teks kosong atau DOCX berisi gambar)";
   }
 
-  // Images → OCR
+  // Images → always OCR
   if (isImage || detectImageMime(bytes)) {
     const imgMime = detectImageMime(bytes) || "image/png";
-    console.log("Image detected, attempting OCR...");
+    console.log("Image detected, attempting OCR with vision model...");
     const ocrText = await ocrDocument(env, bytes, imgMime, fileName);
-    return ocrText || "(Tidak dapat membaca teks dari gambar.)";
+    if (ocrText) return ocrText;
+    // Fallback: try ocrImage if ocrDocument returned nothing
+    const { ocrImage } = await import("./ocr.js");
+    const fallbackText = await ocrImage(env, bytes, fileName);
+    return fallbackText || "(Tidak dapat membaca teks dari gambar. Pastikan gambar jelas dan mengandung teks.)";
   }
 
   // HTML
