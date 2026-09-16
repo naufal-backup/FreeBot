@@ -3,7 +3,7 @@
 // Cron Trigger (scheduled) to the rest of the modules.
 
 import { MAX_TOOL_ITERATIONS, MEMORY_MAX_ENTRIES } from "./config.js";
-import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote, sendChatAction } from "./telegram.js";
+import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote, sendChatAction, registerBotCommands } from "./telegram.js";
 import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
@@ -60,6 +60,9 @@ export default {
     } catch {
       return new Response("OK", { status: 200 });
     }
+
+    // Register bot commands on first request
+    ctx.waitUntil(registerBotCommands(env.TELEGRAM_TOKEN));
 
     const chatId = update?.message?.chat?.id;
     const voiceInfo = update?.message?.voice;
