@@ -31,31 +31,12 @@ const COMMAND_HANDLERS = [
 // Serialize AI processing per chat to prevent race conditions
 const chatQueues = new Map();
 
-// Track thinking/typing indicator messages per chat
-const activeIndicators = new Map();
-
-function enqueueChatTask(chatId, taskFn) {
+function enqueueChatTask(chatId, task) {
   const prev = chatQueues.get(chatId) || Promise.resolve();
-  const next = prev.then(async () => {
-    try {
-      await Promise.race([
-        taskFn(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Task timeout")), 20000))
-      ]);
-    } catch (err) {
-      // Cleanup indicator on any error/timeout
-      const indicator = activeIndicators.get(chatId);
-      if (indicator) {
-        await deleteTelegramMessage(env_global.TELEGRAM_TOKEN, chatId, indicator).catch(() => {});
-        activeIndicators.delete(chatId);
-      }
-    }
-  }).catch(() => {});
-  chatQueues.set(chatId, next);
+  const next = prev.then(task, task);
+  chatQueues.set(chatId, next.catch(() => {}));
   return next;
 }
-
-let env_global = null;
 
 export default {
   async scheduled(event, env, ctx) {
@@ -63,7 +44,6 @@ export default {
   },
 
   async fetch(request, env, ctx) {
-    env_global = env;
     const secretToken = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
     if (request.method !== "POST" || !env.WEBHOOK_SECRET || secretToken !== env.WEBHOOK_SECRET) {
       return new Response("Forbidden", { status: 403 });
@@ -204,61 +184,9 @@ export default {
       const PROVIDER_ID = (activeModelForId || "").split(":")[1] || "";
       const EXTERNAL_API_URL = resolveApiEndpoint(base_url, AI_MODEL, PROVIDER_ID);
 
-      // Delete previous indicator if exists
-      const prevIndicator = activeIndicators.get(chatId);
-      if (prevIndicator) {
-        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, prevIndicator).catch(() => {});
-        activeIndicators.delete(chatId);
-      }
-
-      // Step 1: Send "Thinking..." immediately
-      let thinkingMessageId = null;
-      try {
-        const thinkingRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text: "🧠 Thinking..." })
-        });
-        const thinkingData = await thinkingRes.json();
-        thinkingMessageId = thinkingData?.result?.message_id || null;
-        if (thinkingMessageId) {
-          activeIndicators.set(chatId, thinkingMessageId);
-        }
-      } catch {
-        // best effort
-      }
-
-      // Step 2: After 3s, edit to "Typing..."
-      let typingMessageId = null;
-      const typingTimer = setTimeout(async () => {
-        if (thinkingMessageId) {
-          try {
-            await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/editMessageText`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ chat_id: chatId, message_id: thinkingMessageId, text: "✍️ Typing..." })
-            });
-            typingMessageId = thinkingMessageId;
-          } catch {
-            // best effort
-          }
-        }
-      }, 3000);
-
       let history = await getChatMemory(env, chatId);
       if (history.length >= MEMORY_MAX_ENTRIES) {
         const recent = history.slice(-20);
-        if (typingMessageId) {
-          try {
-            await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/editMessageText`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ chat_id: chatId, message_id: typingMessageId, text: "Merangkum.." })
-            });
-          } catch {
-            // best effort
-          }
-        }
         const summary = await summarizeHistory(env, AI_MODEL, history.slice(0, -20));
         if (summary) {
           history = [...summary, ...recent];
@@ -387,28 +315,13 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         finalContent = finalMsg.content || "Maaf, tidak ada respons.";
         break;
       }
-      if (!finalContent) finalContent = "Terlalu banyak langkah tool. Coba jelaskan lebih singkat atau spesifik."; // safe fallback
-
-      if (typingTimer) {
-        clearTimeout(typingTimer);
-      }
-      // Delete both thinking and typing indicator messages
-      const msgToDelete = typingMessageId || thinkingMessageId;
-      if (msgToDelete) {
-        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, msgToDelete);
-      }
-      activeIndicators.delete(chatId);
+      if (!finalContent) finalContent = "Terlalu banyak langkah tool. Coba jelaskan lebih singkat atau spesifik.";
 
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
       history = [...history, { role: "user", content: userText }, { role: "assistant", content: String(finalContent).trim() }];
       await saveChatMemory(env, chatId, history);
     } catch (err) {
       console.error(err);
-      const cleanupMsg = typingMessageId || thinkingMessageId;
-      if (cleanupMsg) {
-        await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, cleanupMsg);
-      }
-      activeIndicators.delete(chatId);
       try {
         const errMsg = err.message || "Unknown error";
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Error: ${errMsg.slice(0, 500)}`);
