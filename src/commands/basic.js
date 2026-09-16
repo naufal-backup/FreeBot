@@ -5,9 +5,10 @@ import { sendTelegram } from "../telegram.js";
 import { getActiveModel, setActiveModel, resolveModelLabel, sendModelList } from "../models.js";
 import { getCavemanMode, setCavemanMode } from "../storage.js";
 import { getCustomTools, deleteCustomTool } from "../skills.js";
+import { ZEN_MODELS } from "../config.js";
 
 const HELP_TEXT =
-  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model sesi\n/models - daftar model\n/reset - hapus memori chat sesi\n/myid - lihat Telegram ID kamu\n/caveman - toggle mode hemat token\n/skills - lihat skill custom\n/delskill <nama> - hapus skill custom\n/newproject <nama> [template] - buat project (worker-hello|worker-api|ai-chat) + repo GitHub\n/projects - list project\n/storage - status D1\n/cleanup - rekomendasi hapus (FILO)\n/purge <nama> yes - hapus dari D1\n/need-supabase <nama> - buat project Supabase\n/login-gh /token-gh <pat> /gh-status /logout-gh - kelola GitHub\n/login-sb /token-sb <pat> /sb-status /logout-sb - kelola Supabase\n/changeapi <url> <key> - ganti API sekaligus (provider + key)\n/changeprovider <url> - ganti provider, key tetap\n/changekey <key> - ganti key, provider tetap\n/api-status - lihat API aktif\n/resetapi - kembali ke default\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, atau gambar (OCR otomatis).\nKetik teks bebas untuk chat AI.\nBuat skill baru: bilang \"buatkan tool...\" lalu konfirmasi.";
+  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model sesi\n/models - daftar model\n/reset - hapus memori chat sesi\n/myid - lihat Telegram ID kamu\n/caveman - toggle mode hemat token\n/zen - info model Zen (gratis & premium)\n/skills - lihat skill custom\n/delskill <nama> - hapus skill custom\n/newproject <nama> [template] - buat project (worker-hello|worker-api|ai-chat) + repo GitHub\n/projects - list project\n/storage - status D1\n/cleanup - rekomendasi hapus (FILO)\n/purge <nama> yes - hapus dari D1\n/need-supabase <nama> - buat project Supabase\n/login-gh /token-gh <pat> /gh-status /logout-gh - kelola GitHub\n/login-sb /token-sb <pat> /sb-status /logout-sb - kelola Supabase\n/changeapi <url> <key> - ganti API sekaligus (provider + key)\n/changeprovider <url> - ganti provider, key tetap\n/changekey <key> - ganti key, provider tetap\n/api-status - lihat API aktif\n/resetapi - kembali ke default\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, atau gambar (OCR otomatis).\nKetik teks bebas untuk chat AI.\nBuat skill baru: bilang \"buatkan tool...\" lalu konfirmasi.";
 
 export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, messageId) {
   if (cmdWord === "/start") {
@@ -85,6 +86,24 @@ export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, 
     }
     const deleted = await deleteCustomTool(env, chatId, toolName);
     await sendTelegram(env.TELEGRAM_TOKEN, chatId, deleted ? `Skill "${toolName}" dihapus.` : `Skill "${toolName}" tidak ditemukan.`);
+    return true;
+  }
+
+  if (cmdWord === "/zen") {
+    const target = cmdArg.trim().toLowerCase();
+    if (!target || target === "list") {
+      const freeModels = ZEN_MODELS.filter((m) => m.price === "FREE").map((m) => `  ${m.id} — ${m.name}`).join("\n");
+      const paidModels = ZEN_MODELS.filter((m) => m.price !== "FREE").map((m) => `  ${m.id} — ${m.name} (${m.price}/1M tok)`).join("\n");
+      const msg = `OpenCode Zen — Model AI terkurasi untuk coding.\n\nGratis:\n${freeModels}\n\nPremium (bayar per token):\n${paidModels}\n\nCara pakai:\n1. Buat akun + API key di opencode.ai/auth\n2. Atur key: /changekey <zen_api_key>\n3. Atur provider: /changeprovider https://opencode.ai/zen/v1\n4. Pilih model: /model deepseek-v4-flash:zen`;
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, msg);
+      return true;
+    }
+    if (target === "free") {
+      const freeModels = ZEN_MODELS.filter((m) => m.price === "FREE").map((m) => `${m.id} — ${m.name}`).join("\n");
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Model gratis Zen:\n${freeModels}\n\nPakai: /model <id_model>:zen`);
+      return true;
+    }
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /zen atau /zen list atau /zen free");
     return true;
   }
 
