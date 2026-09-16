@@ -34,10 +34,16 @@ const chatQueues = new Map();
 // Track thinking/typing indicator messages per chat
 const activeIndicators = new Map();
 
-function enqueueChatTask(chatId, task) {
+function enqueueChatTask(chatId, taskFn) {
   const prev = chatQueues.get(chatId) || Promise.resolve();
-  const next = prev.then(task, task);
-  chatQueues.set(chatId, next.catch(() => {}));
+  const next = prev.then(() => {
+    const task = Promise.race([
+      taskFn(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Task timeout")), 20000))
+    ]);
+    return task.catch(() => {});
+  }).catch(() => {});
+  chatQueues.set(chatId, next);
   return next;
 }
 
@@ -180,8 +186,6 @@ export default {
     }
 
     // --- Free-text AI chat, with tool calling ----------------------------
-    let typingMessageId = null;
-    let typingTimer = null;
     try {
       const { base_url, api_key } = await getActiveApi(env, chatId);
       const activeModelForId = await getActiveModel(env, chatId);
@@ -308,7 +312,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       let iterations = 0;
       const toolCallHistory = []; // Track tool calls to detect loops
       const loopStartTime = Date.now();
-      const MAX_LOOP_TIME_MS = 30000; // 30 seconds max
+      const MAX_LOOP_TIME_MS = 15000; // 15 seconds max
 
       while (iterations < MAX_TOOL_ITERATIONS) {
         // Auto-stop if loop takes too long
@@ -317,7 +321,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
           break;
         }
         const controller = new AbortController();
-        const aiTimeout = setTimeout(() => controller.abort(), 60000);
+        const aiTimeout = setTimeout(() => controller.abort(), 15000);
         let externalRes;
         try {
           externalRes = await fetch(EXTERNAL_API_URL, {
