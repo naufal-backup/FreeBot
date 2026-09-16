@@ -10,9 +10,8 @@ export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, me
     const id = (args[0] || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     const baseUrl = (args[1] || "").replace(/\/+$/, "");
     const apiKey = args[2] || "";
-    const modelsStr = args.slice(3).join(" ") || "[]";
     if (!id || !baseUrl || !apiKey) {
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /addprovider <id> <base_url> <api_key> [model1,model2,...]\n\nContoh:\n/addprovider zen https://opencode.ai/zen/v1 sk-xxx deepseek-v4-flash,mimo-v2.5-free\n/addprovider ag https://generativelanguage.googleapis.com/v1beta/openai AQ.xxx gemini-3.6-flash");
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /addprovider <id> <base_url> <api_key>\n\nContoh:\n/addprovider zen https://opencode.ai/zen/v1 sk-xxx\n/addprovider ag https://generativelanguage.googleapis.com/v1beta/openai AQ.xxx");
       return true;
     }
     if (!/^https?:\/\//.test(baseUrl)) {
@@ -23,28 +22,30 @@ export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, me
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, "D1 tidak tersedia.");
       return true;
     }
+    // Fetch models from provider API
+    let models = [];
     try {
       const testRes = await fetch(baseUrl + "/models", { headers: { Authorization: "Bearer " + apiKey } });
       if (!testRes.ok) {
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, "API tidak valid (HTTP " + testRes.status + "). Cek base_url dan key.");
         return true;
       }
+      const data = await testRes.json();
+      if (Array.isArray(data?.data)) {
+        models = data.data
+          .filter((m) => typeof m?.id === "string" && m.id)
+          .map((m) => m.id.replace(/^models\//, ""));
+      }
     } catch (err) {
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Gagal koneksi: " + err.message);
       return true;
     }
-    // Parse models: accept comma-separated or JSON array
-    let models = "[]";
-    if (modelsStr.startsWith("[")) {
-      models = modelsStr;
-    } else {
-      const arr = modelsStr.split(",").map((s) => s.trim()).filter(Boolean);
-      models = JSON.stringify(arr);
-    }
+    const modelsJson = JSON.stringify(models);
     await env.DB.prepare(
       "INSERT OR REPLACE INTO provider_configs (id, base_url, api_key, label, models, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).bind(id, baseUrl, apiKey, id, models, Date.now(), Date.now()).run();
-    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Provider " + id + " ditambahkan.\nGunakan /model <nama_model> untuk ganti model.");
+    ).bind(id, baseUrl, apiKey, id, modelsJson, Date.now(), Date.now()).run();
+    const modelList = models.length > 0 ? models.slice(0, 10).join(", ") + (models.length > 10 ? " (+" + (models.length - 10) + " lainnya)" : "") : "(tidak ada model)";
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Provider " + id + " ditambahkan.\nModels: " + modelList + "\n\nGanti model: /model <nama_model>");
     return true;
   }
 
@@ -77,7 +78,7 @@ export async function handleApiCommands(cmdWord, cmdArg, env, chatId, fromId, me
       let modelsList = "";
       try {
         const m = JSON.parse(p.models || "[]");
-        if (m.length > 0) modelsList = "\nModels: " + m.join(", ");
+        if (m.length > 0) modelsList = "\nModels: " + m.slice(0, 8).join(", ") + (m.length > 8 ? " (+" + (m.length - 8) + ")" : "");
       } catch {}
       return p.id + ": " + p.base_url + " [" + maskApiKey(p.api_key) + "]" + modelsList;
     });
