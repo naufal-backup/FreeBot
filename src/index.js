@@ -36,16 +36,26 @@ const activeIndicators = new Map();
 
 function enqueueChatTask(chatId, taskFn) {
   const prev = chatQueues.get(chatId) || Promise.resolve();
-  const next = prev.then(() => {
-    const task = Promise.race([
-      taskFn(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Task timeout")), 20000))
-    ]);
-    return task.catch(() => {});
+  const next = prev.then(async () => {
+    try {
+      await Promise.race([
+        taskFn(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Task timeout")), 20000))
+      ]);
+    } catch (err) {
+      // Cleanup indicator on any error/timeout
+      const indicator = activeIndicators.get(chatId);
+      if (indicator) {
+        await deleteTelegramMessage(env_global.TELEGRAM_TOKEN, chatId, indicator).catch(() => {});
+        activeIndicators.delete(chatId);
+      }
+    }
   }).catch(() => {});
   chatQueues.set(chatId, next);
   return next;
 }
+
+let env_global = null;
 
 export default {
   async scheduled(event, env, ctx) {
@@ -53,6 +63,7 @@ export default {
   },
 
   async fetch(request, env, ctx) {
+    env_global = env;
     const secretToken = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
     if (request.method !== "POST" || !env.WEBHOOK_SECRET || secretToken !== env.WEBHOOK_SECRET) {
       return new Response("Forbidden", { status: 403 });

@@ -31,7 +31,7 @@ export const ZEN_MODELS = [
   { id: "ling-3.0-flash-fin-free", name: "Ling 3.0 Flash Fin Free", price: "FREE" }
 ];
 
-export const MAX_TOOL_ITERATIONS = 8;
+export const MAX_TOOL_ITERATIONS = 1;
 
 export const MEMORY_MAX_ENTRIES = 80;
 
