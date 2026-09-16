@@ -56,13 +56,15 @@ export async function deleteTelegramMessage(botToken, chat_id, message_id) {
 
 export async function sendChatAction(botToken, chat_id) {
   try {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendChatAction`, {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendChatAction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id, action: "typing" })
     });
-  } catch {
-    // best effort
+    const data = await res.json();
+    if (!data.ok) console.error("[TYPING] API error:", data.description);
+  } catch (err) {
+    console.error("[TYPING] fetch error:", err.message);
   }
 }
 

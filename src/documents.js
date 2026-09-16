@@ -40,6 +40,55 @@ async function decompressFlate(data) {
   return null;
 }
 
+// ── PDF dictionary + stream helpers ─────────────────────────────────────────
+
+function findDictBeforeStream(data, streamIdx) {
+  const decoder = new TextDecoder("utf-8");
+  const searchStart = Math.max(0, streamIdx - 5000);
+
+  // Step 1: Find ">>" (end of dict) immediately before stream marker
+  let dictEnd = -1;
+  for (let i = streamIdx - 1; i >= searchStart; i--) {
+    if (data[i] === 0x3E && data[i + 1] === 0x3E) { // ">>"
+      dictEnd = i;
+      break;
+    }
+  }
+  if (dictEnd === -1) return "";
+
+  // Step 2: Find matching "<<" (start of dict) before the ">>"
+  let dictStart = -1;
+  for (let i = dictEnd - 1; i >= searchStart; i--) {
+    if (data[i] === 0x3C && data[i + 1] === 0x3C) { // "<<"
+      dictStart = i;
+      break;
+    }
+  }
+  if (dictStart === -1) return "";
+
+  return decoder.decode(data.slice(dictStart, dictEnd + 2));
+}
+
+function findStreamLength(dictText, data) {
+  // Try direct: /Length 6415
+  const directMatch = dictText.match(/\/Length\s+(\d+)/);
+  if (directMatch) return parseInt(directMatch[1]);
+
+  // Try indirect: /Length 5 0 R → resolve the referenced object
+  const refMatch = dictText.match(/\/Length\s+(\d+)\s+\d+\s+R/);
+  if (refMatch) {
+    const objNum = parseInt(refMatch[1]);
+    // Find "N 0 obj" in the data
+    const decoder = new TextDecoder("utf-8");
+    const raw = decoder.decode(data);
+    const objRe = new RegExp(`\\b${objNum}\\s+0\\s+obj\\s*(\\d+)`);
+    const objMatch = raw.match(objRe);
+    if (objMatch) return parseInt(objMatch[1]);
+  }
+
+  return null;
+}
+
 // ── CMap support ────────────────────────────────────────────────────────────
 // CMap maps character codes (hex in PDF streams) to Unicode code points.
 // Common in CIDFont-based PDFs (CJK, modern fonts).
@@ -88,30 +137,45 @@ function parseCMap(text) {
   return cmap;
 }
 
+function findAllStreamMarkers(data) {
+  const results = [];
+  let pos = 0;
+  while (pos < data.length) {
+    let found = -1;
+    for (let i = pos; i <= data.length - 6; i++) {
+      if (data[i]===115 && data[i+1]===116 && data[i+2]===114 && data[i+3]===101 && data[i+4]===97 && data[i+5]===109) {
+        found = i; break;
+      }
+    }
+    if (found === -1) break;
+    // Skip if preceded by 'd' (part of "endstream")
+    if (found > 0 && data[found - 1] === 0x64) {
+      pos = found + 6;
+      continue;
+    }
+    results.push(found);
+    pos = found + 6;
+  }
+  return results;
+}
+
 async function extractCMapsFromPdf(data) {
   const decoder = new TextDecoder("utf-8");
   const merged = new Map();
-  const streamMarker = new Uint8Array([115, 116, 114, 97, 101, 109]); // "stream"
+  const streamPositions = findAllStreamMarkers(data);
 
-  let pos = 0;
-  while (pos < data.length) {
-    const streamIdx = findBytes(data, streamMarker, pos);
-    if (streamIdx === -1) break;
+  for (const streamIdx of streamPositions) {
+    const dictText = findDictBeforeStream(data, streamIdx);
+    if (!dictText.includes("FlateDecode")) continue;
 
-    const dictStart = Math.max(0, streamIdx - 3000);
-    const dictSlice = decoder.decode(data.slice(dictStart, streamIdx));
-
-    const lengthMatch = dictSlice.match(/\/Length\s+(\d+)/);
-    if (!lengthMatch) { pos = streamIdx + 6; continue; }
-    if (!dictSlice.includes("FlateDecode")) { pos = streamIdx + 6; continue; }
+    const streamLen = findStreamLength(dictText, data);
+    if (streamLen === null || streamLen <= 0) continue;
 
     let dataStart = streamIdx + 6;
     if (data[dataStart] === 13) dataStart++;
     if (data[dataStart] === 10) dataStart++;
 
-    const streamLen = parseInt(lengthMatch[1]);
     const streamBytes = data.slice(dataStart, dataStart + streamLen);
-
     const decompressed = await decompressFlate(streamBytes);
     if (decompressed) {
       const streamText = decoder.decode(decompressed);
@@ -120,8 +184,6 @@ async function extractCMapsFromPdf(data) {
         for (const [k, v] of cmap) merged.set(k, v);
       }
     }
-
-    pos = dataStart + streamLen;
   }
 
   return merged;
@@ -223,30 +285,22 @@ export async function extractPdfText(data) {
   const cmap = await extractCMapsFromPdf(data);
 
   // Step 1: find streams, decompress using /Length, extract text
-  const streamMarker = new Uint8Array([115, 116, 114, 101, 97, 109]); // "stream"
+  const streamPositions = findAllStreamMarkers(data);
 
-  let pos = 0;
   const allResults = [];
 
-  while (pos < data.length) {
-    const streamIdx = findBytes(data, streamMarker, pos);
-    if (streamIdx === -1) break;
-
-    const dictSearchStart = Math.max(0, streamIdx - 3000);
-    const dictSlice = decoder.decode(data.slice(dictSearchStart, streamIdx));
-
-    // Use /Length from dictionary, not endstream position
-    const lengthMatch = dictSlice.match(/\/Length\s+(\d+)/);
-    if (!lengthMatch) { pos = streamIdx + 6; continue; }
+  for (const streamIdx of streamPositions) {
+    const dictText = findDictBeforeStream(data, streamIdx);
+    const streamLen = findStreamLength(dictText, data);
+    if (streamLen === null || streamLen <= 0) continue;
 
     let dataStart = streamIdx + 6;
     if (data[dataStart] === 13) dataStart++;
     if (data[dataStart] === 10) dataStart++;
 
-    const streamLen = parseInt(lengthMatch[1]);
     const streamBytes = data.slice(dataStart, dataStart + streamLen);
 
-    if (dictSlice.includes("FlateDecode")) {
+    if (dictText.includes("FlateDecode")) {
       const decompressed = await decompressFlate(streamBytes);
 
       if (decompressed) {
@@ -273,15 +327,13 @@ export async function extractPdfText(data) {
           }
         }
       }
-    } else if (!dictSlice.includes("DCTDecode") && !dictSlice.includes("JPXDecode")) {
+    } else if (!dictText.includes("DCTDecode") && !dictText.includes("JPXDecode")) {
       const rawText = decoder.decode(streamBytes);
       if (rawText.includes("BT") && rawText.includes("ET")) {
         const text = extractTextFromRaw(rawText, cmap);
         if (text && text.length > 10) allResults.push(text);
       }
     }
-
-    pos = dataStart + streamLen;
   }
 
   const combined = allResults.join("\n").trim();
