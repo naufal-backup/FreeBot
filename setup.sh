@@ -62,15 +62,21 @@ done
 # ============================================================
 # 3. Buat folder projekt & salin file template
 # ============================================================
-mkdir -p "$WORKER_NAME/src" "$WORKER_NAME/migrations"
+mkdir -p "$WORKER_NAME/src/commands" "$WORKER_NAME/src/tools" "$WORKER_NAME/src/utils" "$WORKER_NAME/migrations"
 ok "Folder project: $WORKER_NAME/"
 
-cp src/index.js "$WORKER_NAME/src/index.js"      || fail "File src/index.js tidak ditemukan. Pastikan setup.sh dijalankan dari root direktori repo FreeBot."
+# Copy semua file src (modular ES modules)
+cp src/*.js "$WORKER_NAME/src/"                  || fail "File src/*.js tidak ditemukan. Pastikan setup.sh dijalankan dari root direktori repo FreeBot."
+cp src/commands/*.js "$WORKER_NAME/src/commands/" 2>/dev/null || true
+cp src/tools/*.js "$WORKER_NAME/src/tools/"      2>/dev/null || true
+cp src/utils/*.js "$WORKER_NAME/src/utils/"      2>/dev/null || true
+ok "Kode source disalin (modular)"
+
 for f in migrations/*.sql; do
   [ -f "$f" ] || continue
   cp "$f" "$WORKER_NAME/migrations/"
 done
-ok "Kode + migrasi disalin"
+ok "Migrasi disalin"
 
 cat > "$WORKER_NAME/wrangler.toml" <<EOF
 name = "$WORKER_NAME"
@@ -78,8 +84,14 @@ main = "src/index.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
 
+[triggers]
+crons = ["* * * * *"]
+
 [vars]
 STORAGE_QUOTA_BYTES = "419430400"
+
+[ai]
+binding = "AI"
 EOF
 ok "wrangler.toml dibuat"
 
@@ -92,6 +104,9 @@ cat > "$WORKER_NAME/package.json" <<'EOF'
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
   }
 }
 EOF
@@ -100,7 +115,12 @@ ok "package.json dibuat"
 cd "$WORKER_NAME"
 
 # ============================================================
-# 4. D1: database + migrasi
+# 4. Install dependencies
+# ============================================================
+npm install >/dev/null 2>&1 && ok "npm install OK" || warn "npm install gagal, coba manual"
+
+# ============================================================
+# 5. D1: database + migrasi
 # ============================================================
 DB_CREATE_OUTPUT=$(npx wrangler d1 create telegram-projects 2>&1)
 DB_ID=$(echo "$DB_CREATE_OUTPUT" | grep -oP 'database_id\s*=\s*"\K[^"]+' | head -1)
@@ -124,7 +144,7 @@ for f in migrations/*.sql; do
 done
 
 # ============================================================
-# 5. Secrets (aman — tidak tersimpan di file)
+# 6. Secrets (aman — tidak tersimpan di file)
 # ============================================================
 echo -n "$TELEGRAM_TOKEN"      | npx wrangler secret put TELEGRAM_TOKEN      >/dev/null 2>&1 && ok "Secret TELEGRAM_TOKEN"      || warn "TELEGRAM_TOKEN gagal"
 echo -n "$AI_API_KEY"          | npx wrangler secret put EXTERNAL_API_KEY    >/dev/null 2>&1 && ok "Secret EXTERNAL_API_KEY"    || warn "EXTERNAL_API_KEY gagal"
@@ -134,7 +154,7 @@ WEBHOOK_SECRET=$(openssl rand -hex 32)
 echo -n "$WEBHOOK_SECRET"      | npx wrangler secret put WEBHOOK_SECRET     >/dev/null 2>&1 && ok "Secret WEBHOOK_SECRET"     || warn "WEBHOOK_SECRET gagal"
 
 # ============================================================
-# 6. Deploy Worker
+# 7. Deploy Worker
 # ============================================================
 DEPLOY_OUTPUT=$(npx wrangler deploy 2>&1)
 WORKER_URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[a-z0-9-]+\.workers\.dev' | head -1)
@@ -142,7 +162,7 @@ WORKER_URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[a-z0-9-]+\.workers\.dev'
 ok "Deployed: $WORKER_URL"
 
 # ============================================================
-# 7. Set Webhook Telegram
+# 8. Set Webhook Telegram
 # ============================================================
 CURL_RESULT=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook" \
   -H "Content-Type: application/json" \
@@ -154,7 +174,7 @@ else
 fi
 
 # ============================================================
-# 8. SetBotCommands
+# 9. SetBotCommands
 # ============================================================
 python3 - "$TELEGRAM_TOKEN" <<'PY'
 import json, subprocess, sys
@@ -169,8 +189,13 @@ commands = [
   ("changeapi","Ganti API sekaligus"),("changeprovider","Ganti provider, key tetap"),
   ("changekey","Ganti key, provider tetap"),("api_status","Lihat API aktif"),
   ("resetapi","Kembali ke API default"),
-  ("login_gh","Sambung GitHub"),("gh_status","Cek GitHub"),("logout_gh","Hapus token GitHub"),
-  ("login_sb","Sambung Supabase"),("sb_status","Cek Supabase"),("logout_sb","Hapus token Supabase"),
+  ("login_gh","Sambung GitHub"),("token_gh","Simpan token GitHub"),
+  ("gh_status","Cek GitHub"),("logout_gh","Hapus token GitHub"),
+  ("login_sb","Sambung Supabase"),("token_sb","Simpan token Supabase"),
+  ("sb_status","Cek Supabase"),("logout_sb","Hapus token Supabase"),
+  ("cron","Buat cron harian"),("crons","Daftar cron"),("delcron","Hapus cron"),
+  ("remind","Buat pengingat"),("reminds","Daftar pengingat"),
+  ("addprovider","Tambah AI provider"),("delprovider","Hapus provider"),("providers","Daftar provider"),
 ]
 body = json.dumps({"commands":[{"command":c,"description":d} for c,d in commands]})
 subprocess.run(["curl","-s","-X","POST",f"https://api.telegram.org/bot{token}/setMyCommands","-H","Content-Type: application/json","-d",body])
@@ -178,7 +203,7 @@ PY
 ok "Bot commands terpasang"
 
 # ============================================================
-# 9. Simpan info kunci (rahasia – jangan commit)
+# 10. Simpan info kunci (rahasia – jangan commit)
 # ============================================================
 cp wrangler.toml wrangler.toml.bak
 cat > .env.webhook <<EOF
@@ -192,6 +217,15 @@ echo -e "${GREEN}  SELESAI! 🎉${NC}"
 echo "=============================================="
 echo "  Worker URL : $WORKER_URL"
 echo "  Webhook    : tersimpan di .env.webhook (jangan di-commit)"
+echo ""
+echo "  Fitur aktif:"
+echo "    - AI Chat (multi-provider, multi-model)"
+echo "    - Document reader (PDF, DOCX, HTML, TXT, MD)"
+echo "    - Image OCR (via Cloudflare Workers AI)"
+echo "    - Voice transcription (butuh setup audio worker)"
+echo "    - GitHub integration (repo, commit, branch)"
+echo "    - Supabase project management"
+echo "    - Cron tasks & reminders"
 echo ""
 echo "  Langkah selanjutnya (via Telegram):"
 echo "    1. Chat bot → /start"

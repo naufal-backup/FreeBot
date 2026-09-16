@@ -4,11 +4,10 @@
 ![Language](https://img.shields.io/badge/language-JavaScript-yellow.svg)
 ![Platform](https://img.shields.io/badge/platform-Cloudflare%20Workers-orange.svg)
 ![Runtime](https://img.shields.io/badge/runtime-ESM-purple.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
 
-Serverless AI Telegram Chatbot berjalan di **Cloudflare Workers** — tanpa server, tanpa database tradisional, tanpa biaya sewa VPS. Kode ES Module murni, hanya `fetch()` native, tanpa npm packages.
+Serverless AI Telegram Chatbot berjalan di **Cloudflare Workers** — tanpa server, tanpa database tradisional, tanpa biaya sewa VPS. Kode ES Modular, auto-bundle oleh Wrangler.
 
-Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kelola Supabase, websearch, transkripsi voice note, dan kontrol akses hanya untuk ID Telegram yang diizinkan.
+Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kelola Supabase, websearch, transkripsi voice note, OCR gambar/dokumen scan, dan kontrol akses hanya untuk ID Telegram yang diizinkan.
 
 ## Fitur
 
@@ -21,12 +20,14 @@ Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kel
 - **Supabase on-demand** — `/need-supabase`
 - **Websearch** — AI bisa cari info dari web saat dibutuhkan
 - **Tool Calling** — AI punya akses eksekusi skill (project, storage, model, waktu, websearch)
-- **Transkripsi Voice Note** — kirim VN, bot transkrip pakai Whisper via Workers AI (gratis, ~214 menit/hari). File audio tidak disimpan permanen.
-- **Markdown Telegram** — bold `**`, italic `*`, code `` ` ``, strikethrough `~~`, tabel pipe, header `#`/`##` otomatis ter-render di Telegram
-- **Identitas tetap** — jawaban "siapa kamu?" deterministik, tidak bisa dimanipulasi
+- **Document Reader** — baca PDF, DOCX, HTML, TXT, Markdown
+- **Image OCR** — baca teks dari gambar via Cloudflare Workers AI (gratis)
+- **Transkripsi Voice Note** — kirim VN, bot transkrip pakai Whisper via Workers AI
+- **Cron Tasks & Reminders** — jadwalkan tugas harian dan pengingat
+- **Markdown Telegram** — bold, italic, code, strikethrough, tabel, header
+- **Identitas tetap** — jawaban "siapa kamu?" deterministik
 - **Akses terkunci** — hanya `ALLOWED_USER_IDS` yang boleh pakai
 - **Endpoint privat** — webhook divalidasi `secret_token`
-- **Voice worker terkunci** — URL publik dimatikan, hanya dipanggil via service binding (privat, dalam akun Cloudflare yang sama)
 
 ## Cara Install
 
@@ -34,7 +35,7 @@ Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kel
 
 - [Node.js](https://nodejs.org) ≥ 18
 - Akun [Cloudflare](https://dash.cloudflare.com)
-- Akun provider AI (atau pakai Geraikita gratis dari `opencode.jsonc` contoh)
+- Akun provider AI (atau pakai Geraikita)
 - Bot Telegram dari [@BotFather](https://t.me/BotFather)
 
 ### Langkah
@@ -61,27 +62,50 @@ Script akan menanyakan:
 | AI API Key | key provider |
 | ALLOWED_USER_IDS | ID Telegram (bisa lebih dari satu, dipisah koma) |
 
-Lalu otomatis: buat D1, apply migrasi, set secrets, deploy, set webhook, set menu perintah.
+Lalu otomatis: install deps, buat D1, apply migrasi, set secrets, deploy, set webhook, set menu perintah.
 
 ### Selesai
 
-Buka bot di Telegram → kirim `/start`, lalu `/setup` untuk mengecek status ID kamu:
+Buka bot di Telegram → kirim `/start`:
 
 1. Kirim `/myid` → dapat Telegram ID kamu
-2. Kalau ID tidak terdaftar, tambahkan ke secret `ALLOWED_USER_IDS` (re-deploy tombol di dashboard)
+2. Kalau ID tidak terdaftar, tambahkan ke secret `ALLOWED_USER_IDS`
 3. Kirim pesan bebas → bot balas dengan AI
+4. Kirim dokumen (PDF/DOCX/HTML/TXT/MD/gambar) → bot baca & ringkas
 
 ## Struktur Project
 
 ```
 FreeBot/
-├── src/index.js          # Kode utama (ES Module, fetch native)
-├── migrations/           # Migrasi D1
-│   ├── 0001_init.sql     # projects, project_files, service_tokens
-│   ├── 0002_chat_memory.sql  # chat_memory, chat_settings
-│   └── 0003_api_config.sql   # api_config
-├── setup.sh              # Instalasi otomatis
-└── wrangler.toml         # Konfigurasi (dibuat setup)
+├── src/
+│   ├── index.js              # Entry point (fetch + scheduled)
+│   ├── config.js             # Konstanta bersama
+│   ├── telegram.js           # Telegram Bot API
+│   ├── github.js             # GitHub REST API
+│   ├── supabase.js           # Supabase Management API
+│   ├── models.js             # Model & provider management
+│   ├── storage.js            # D1 persistence (tokens, memory)
+│   ├── documents.js          # Document extraction (PDF/DOCX/HTML/TXT/MD)
+│   ├── ocr.js                # OCR via Cloudflare Workers AI
+│   ├── templates.js          # Project scaffold templates
+│   ├── identity.js           # Identity question detection
+│   ├── scheduled.js          # Cron & reminder runner
+│   ├── commands/
+│   │   ├── basic.js          # /start /help /model /models /reset
+│   │   ├── auth.js           # /login-gh /token-gh /gh-status /login-sb ...
+│   │   ├── apiConfig.js      # /changeapi /changeprovider /providers ...
+│   │   ├── projects.js       # /newproject /projects /storage /cleanup /purge
+│   │   └── schedule.js       # /cron /crons /delcron /remind /reminds
+│   ├── tools/
+│   │   ├── definitions.js    # Tool schema (function calling)
+│   │   └── executor.js       # Tool execution
+│   └── utils/
+│       ├── format.js         # fmtBytes, maskApiKey
+│       ├── time.js           # Natural language time parser
+│       └── markdown.js       # Markdown → Telegram HTML
+├── migrations/               # D1 SQL migrations
+├── setup.sh                  # Instalasi otomatis
+└── wrangler.toml             # Konfigurasi (dibuat setup)
 ```
 
 ## Perintah Bot
@@ -112,14 +136,34 @@ FreeBot/
 /token-sb       Simpan token Supabase
 /sb-status      Cek project Supabase
 /logout-sb      Hapus token Supabase
+/cron           Buat cron harian
+/crons          Daftar cron
+/delcron        Hapus cron
+/remind         Buat pengingat
+/reminds        Daftar pengingat
+/addprovider    Tambah AI provider
+/delprovider    Hapus provider
+/providers      Daftar provider
 ```
+
+## Format Dokumen yang Didukung
+
+| Format | Ekstensi | Keterangan |
+|--------|----------|------------|
+| PDF | `.pdf` | Text extraction + OCR untuk scan |
+| DOCX | `.docx` | XML parsing + OCR untuk gambar |
+| HTML | `.html`, `.htm` | Strip tags, decode entities |
+| Plain Text | `.txt` | Langsung baca |
+| Markdown | `.md` | Langsung baca |
+| Gambar | `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif` | OCR via Cloudflare AI |
 
 ## Teknologi
 
 - **Cloudflare Workers** — serverless edge runtime
 - **Cloudflare D1** — SQLite serverless (projects, memori, config)
+- **Cloudflare Workers AI** — OCR & vision models (gratis)
 - **Telegram Bot API** — webhook + sendMessage + sendChatAction
-- **fetch() native** — tanpa npm packages
+- **ES Modules** — auto-bundle oleh Wrangler
 
 ## Keamanan
 
@@ -127,6 +171,7 @@ FreeBot/
 - Hanya `ALLOWED_USER_IDS` yang boleh berinteraksi (fail-closed)
 - API key & token disimpan sebagai secret Cloudflare / via `/changeapi`
 - Pesan berisi token dihapus otomatis di Telegram
+- Chat queue per-room: serialisasi AI processing (cegah race condition)
 
 ## Lisensi
 
