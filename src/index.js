@@ -11,6 +11,7 @@ import { getActiveModel, getActiveApi, resolveApiEndpoint } from "./models.js";
 import { getChatMemory, saveChatMemory, summarizeHistory, getCavemanMode } from "./storage.js";
 import { getAllToolDefinitions } from "./tools/definitions.js";
 import { executeTool } from "./tools/executor.js";
+import { getGoogleAccessToken, extractDocIdFromUrl, extractSheetIdFromUrl, readGoogleDoc, readGoogleSheet } from "./google.js";
 
 import { handleBasicCommands } from "./commands/basic.js";
 import { handleAuthCommands } from "./commands/auth.js";
@@ -330,7 +331,6 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       const gUrlMatch = userText.match(/https:\/\/docs\.google\.com\/(spreadsheets|document)\/d\/[a-zA-Z0-9_-]+/);
       if (gUrlMatch && env.GOOGLE_SERVICE_ACCOUNT) {
         try {
-          const { getGoogleAccessToken, extractDocIdFromUrl, extractSheetIdFromUrl, readGoogleDoc, readGoogleSheet } = await import("./google.js");
           const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
           const url = gUrlMatch[0];
           let toolResult;
