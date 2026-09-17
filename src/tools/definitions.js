@@ -324,6 +324,67 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "google_create_sheet",
+      description: 'Buat Google Sheets baru. Panggil saat user minta "buat spreadsheet", "buat tabel di Google Sheets".',
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Judul spreadsheet" }
+        },
+        required: ["title"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "google_read_sheet",
+      description: 'Baca isi Google Sheets. Kirim link atau spreadsheet_id. Panggil saat user minta "baca spreadsheet", "baca tabel ini".',
+      parameters: {
+        type: "object",
+        properties: {
+          spreadsheet_id: { type: "string", description: "Link Google Sheets atau spreadsheet_id" },
+          range: { type: "string", description: "Range sel (default: Sheet1!A1:Z1000)" }
+        },
+        required: ["spreadsheet_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "google_write_sheet",
+      description: 'Tulis data ke Google Sheets. Kirim link atau spreadsheet_id. Panggil saat user minta "tulis ke spreadsheet", "isi tabel".',
+      parameters: {
+        type: "object",
+        properties: {
+          spreadsheet_id: { type: "string", description: "Link Google Sheets atau spreadsheet_id" },
+          range: { type: "string", description: "Range sel (default: Sheet1!A1)" },
+          values: { type: "string", description: 'Data dalam format JSON array, contoh: [["Nama","Umur"],["Budi",25]]' }
+        },
+        required: ["spreadsheet_id", "values"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "google_append_sheet",
+      description: 'Tambah baris baru ke Google Sheets. Kirim link atau spreadsheet_id. Panggil saat user minta "tambah baris", "append ke tabel".',
+      parameters: {
+        type: "object",
+        properties: {
+          spreadsheet_id: { type: "string", description: "Link Google Sheets atau spreadsheet_id" },
+          range: { type: "string", description: "Range sel (default: Sheet1!A:Z)" },
+          values: { type: "string", description: 'Data baru dalam format JSON array, contoh: [["Andi",30]]' }
+        },
+        required: ["spreadsheet_id", "values"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "cron_list",
       description: "Tampilkan semua tugas cron yang sudah dijadwalkan untuk user ini.",
       parameters: { type: "object", properties: {} }

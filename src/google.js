@@ -195,3 +195,71 @@ function extractDocContent(content) {
   }
   return parts.join("");
 }
+
+export function extractSheetIdFromUrl(input) {
+  if (!input) return null;
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(input.trim())) return input.trim();
+  const m = input.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return m[1];
+  return null;
+}
+
+export async function createGoogleSheet(accessToken, title) {
+  const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ properties: { title } })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || "Gagal buat spreadsheet");
+  return { spreadsheetId: data.spreadsheetId, title: data.properties.title, url: data.spreadsheetUrl };
+}
+
+export async function readGoogleSheet(accessToken, spreadsheetId, range) {
+  const r = range || "Sheet1!A1:Z1000";
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(r)}?valueRenderOption=FORMATTED_VALUE`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || "Gagal baca spreadsheet");
+  const rows = data.values || [];
+  return { title: data.range, rows, spreadsheetId };
+}
+
+export async function writeGoogleSheet(accessToken, spreadsheetId, range, values) {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ values })
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || "Gagal tulis ke spreadsheet");
+  return { updatedCells: data.updatedCells || 0, spreadsheetId };
+}
+
+export async function appendGoogleSheet(accessToken, spreadsheetId, range, values) {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ values })
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || "Gagal append ke spreadsheet");
+  return { updatedCells: data.updates?.updatedCells || 0, spreadsheetId };
+}

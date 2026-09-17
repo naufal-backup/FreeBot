@@ -21,7 +21,7 @@ import { getServiceToken, getStorageUsage } from "../storage.js";
 import { saveCustomTool, getCustomTools, deleteCustomTool, executeCustomTool } from "../skills.js";
 import { getAllModels, resolveModelLabel, setActiveModel } from "../models.js";
 import { renderTemplate } from "../templates.js";
-import { getGoogleAccessToken, createGoogleDoc, readGoogleDoc, appendGoogleDoc, shareGoogleDoc, extractDocIdFromUrl, isPermissionError, permissionDeniedHint } from "../google.js";
+import { getGoogleAccessToken, createGoogleDoc, readGoogleDoc, appendGoogleDoc, shareGoogleDoc, extractDocIdFromUrl, isPermissionError, permissionDeniedHint, extractSheetIdFromUrl, createGoogleSheet, readGoogleSheet, writeGoogleSheet, appendGoogleSheet } from "../google.js";
 
 export async function toolWebsearch(query) {
   if (!query) return "Query tidak boleh kosong.";
@@ -469,6 +469,79 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         } catch (e) {
           if (isPermissionError(e.message)) return permissionDeniedHint();
           return `\u274C Gagal share: ${e.message}`;
+        }
+      }
+
+      case "google_create_sheet": {
+        const sheetTitle = args.title || "Spreadsheet Baru";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const sheet = await createGoogleSheet(token, sheetTitle);
+          return `\u2705 Spreadsheet berhasil dibuat!\n\n**${sheet.title}**\n${sheet.url}`;
+        } catch (e) {
+          return `\u274C Gagal buat spreadsheet: ${e.message}`;
+        }
+      }
+
+      case "google_read_sheet": {
+        const sheetId = extractSheetIdFromUrl(args.spreadsheet_id || args.url || args.link);
+        const range = args.range || "Sheet1!A1:Z1000";
+        if (!sheetId) return "spreadsheet_id tidak valid. Kirim link Google Sheets atau spreadsheet_id.";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const data = await readGoogleSheet(token, sheetId, range);
+          if (!data.rows.length) return "Spreadsheet kosong.";
+          const header = data.rows[0] || [];
+          const rows = data.rows.slice(1);
+          let output = `**${data.title}**\n\n`;
+          output += `Kolom: ${header.join(" | ")}\n`;
+          output += `${"-".repeat(40)}\n`;
+          for (const row of rows.slice(0, 50)) {
+            output += row.join(" | ") + "\n";
+          }
+          if (rows.length > 50) output += `\n... dan ${rows.length - 50} baris lagi`;
+          return output;
+        } catch (e) {
+          if (isPermissionError(e.message)) return permissionDeniedHint();
+          return `\u274C Gagal baca spreadsheet: ${e.message}`;
+        }
+      }
+
+      case "google_write_sheet": {
+        const sheetId = extractSheetIdFromUrl(args.spreadsheet_id || args.url || args.link);
+        const range = args.range || "Sheet1!A1";
+        const values = args.values;
+        if (!sheetId || !values) return "spreadsheet_id dan values harus diisi.";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const parsed = typeof values === "string" ? JSON.parse(values) : values;
+          const result = await writeGoogleSheet(token, sheetId, range, parsed);
+          const url = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+          return `\u2705 Berhasil tulis ${result.updatedCells} sel ke spreadsheet.\n${url}`;
+        } catch (e) {
+          if (isPermissionError(e.message)) return permissionDeniedHint();
+          return `\u274C Gagal tulis: ${e.message}`;
+        }
+      }
+
+      case "google_append_sheet": {
+        const sheetId = extractSheetIdFromUrl(args.spreadsheet_id || args.url || args.link);
+        const range = args.range || "Sheet1!A:Z";
+        const values = args.values;
+        if (!sheetId || !values) return "spreadsheet_id dan values harus diisi.";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const parsed = typeof values === "string" ? JSON.parse(values) : values;
+          const result = await appendGoogleSheet(token, sheetId, range, parsed);
+          const url = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+          return `\u2705 Berhasil append ${result.updatedCells} sel ke spreadsheet.\n${url}`;
+        } catch (e) {
+          if (isPermissionError(e.message)) return permissionDeniedHint();
+          return `\u274C Gagal append: ${e.message}`;
         }
       }
 
