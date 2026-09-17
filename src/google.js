@@ -53,7 +53,7 @@ export async function getGoogleAccessToken(serviceAccountJson) {
   const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claim = base64url(JSON.stringify({
     iss: client_email,
-    scope: "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive.file",
+    scope: "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file",
     aud: "https://oauth2.googleapis.com/token",
     exp,
     iat: now
