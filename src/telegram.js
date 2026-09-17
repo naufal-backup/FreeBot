@@ -257,3 +257,17 @@ export async function editMessageReplyMarkup(botToken, chat_id, message_id, butt
   });
   return await res.json();
 }
+
+export async function editMessageKeyboard(botToken, chat_id, message_id, text, buttons) {
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id,
+      message_id,
+      text,
+      reply_markup: { inline_keyboard: buttons }
+    })
+  });
+  return await res.json();
+}
