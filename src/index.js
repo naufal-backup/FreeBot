@@ -312,6 +312,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       // Send thinking message
       const thinkingMsg = await sendTelegram(env.TELEGRAM_TOKEN, chatId, "🤔 Thinking...");
       const thinkingMsgId = thinkingMsg?.result?.message_id;
+      console.log("[THINKING] sent:", thinkingMsgId, "ok:", thinkingMsg?.ok);
 
       // Periodic typing indicator — refresh every 4 seconds, auto-expires
       const stopTyping = startTyping(env.TELEGRAM_TOKEN, chatId);
@@ -408,7 +409,13 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       }
 
       if (thinkingMsgId) {
-        await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, String(finalContent).trim().slice(0, 4096));
+        const editRes = await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, String(finalContent).trim().slice(0, 4096));
+        console.log("[THINKING] edit:", thinkingMsgId, editRes?.ok ? "ok" : editRes?.error);
+        if (!editRes?.ok) {
+          // Edit failed — delete thinking message, send result as new message
+          try { await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, thinkingMsgId); } catch {}
+          await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
+        }
       } else {
         await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
       }
@@ -420,7 +427,11 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         const errMsg = err.message || "Unknown error";
         const errorText = `Error: ${errMsg.slice(0, 500)}`;
         if (thinkingMsgId) {
-          await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, errorText);
+          const editRes = await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, errorText);
+          if (!editRes?.ok) {
+            try { await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, thinkingMsgId); } catch {}
+            await sendTelegram(env.TELEGRAM_TOKEN, chatId, errorText);
+          }
         } else {
           await sendTelegram(env.TELEGRAM_TOKEN, chatId, errorText);
         }
