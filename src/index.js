@@ -97,7 +97,8 @@ export default {
           await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Ukuran dokumen melebihi batas 20MB.");
           return new Response("OK", { status: 200 });
         }
-        await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Membaca dokumen...");
+        const docMsgRes = await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Membaca dokumen...");
+        const docMsgId = docMsgRes?.result?.message_id;
         try {
           const hint = /\.(pdf)$/i.test(fileName)
             ? "pdf"
@@ -128,6 +129,10 @@ export default {
             console.log("[DOC] extraction result:", text ? text.length : 0, "chars");
           } finally {
             clearTimeout(docTimeout);
+          }
+          // Delete "Membaca dokumen..." status message
+          if (docMsgId) {
+            try { await deleteTelegramMessage(env.TELEGRAM_TOKEN, chatId, docMsgId); } catch {}
           }
           if (text && text.trim()) {
             userText =
@@ -366,15 +371,19 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
               finalContent = "Proses dihentikan oleh user.";
               break;
             }
-            // Skip duplicate file sends
+            // Skip duplicate file sends — key by filename only
             const fnName = tc.function?.name;
-            if ((fnName === "generate_file" || fnName === "generate_pdf") && sentFiles.has(tc.function?.arguments)) {
+            let fileKey = null;
+            if (fnName === "generate_file" || fnName === "generate_pdf") {
+              try { fileKey = JSON.parse(tc.function?.arguments || "{}")?.name; } catch {}
+            }
+            if (fileKey && sentFiles.has(fileKey)) {
               messages.push({ role: "tool", tool_call_id: tc.id, content: "File sudah dikirim sebelumnya, dilewati." });
               continue;
             }
             const result = await executeTool(tc, env, chatId, fromId);
-            if (fnName === "generate_file" || fnName === "generate_pdf") {
-              sentFiles.add(tc.function?.arguments);
+            if (fileKey) {
+              sentFiles.add(fileKey);
             }
             messages.push({ role: "tool", tool_call_id: tc.id, content: result });
             const callKey = `${tc.function?.name}:${tc.function?.arguments}`;
