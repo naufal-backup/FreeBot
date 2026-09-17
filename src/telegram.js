@@ -222,14 +222,12 @@ export async function registerBotCommands(botToken) {
 }
 
 export async function sendTelegramInlineKeyboard(botToken, chat_id, text, buttons) {
-  const html = markdownToHtml(text);
   const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id,
-      text: html,
-      parse_mode: "HTML",
+      text,
       reply_markup: {
         inline_keyboard: buttons
       }

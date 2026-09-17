@@ -145,39 +145,73 @@ export async function buildModelChunks(env) {
 }
 
 const modelPickMemory = new Map();
+const PAGE_SIZE = 18; // 9 rows x 2 buttons + 1 nav row = 10 rows (Telegram max)
 
 function buildPickId(chatId) {
   return "p:" + String(chatId).slice(0, 10);
 }
 
+function pageButtons(items, page) {
+  const total = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  page = Math.max(0, Math.min(page, total - 1));
+  const start = page * PAGE_SIZE;
+  const slice = items.slice(start, start + PAGE_SIZE);
+  const buttons = [];
+  let row = [];
+  for (let i = 0; i < slice.length; i++) {
+    const m = slice[i];
+    const label = m.disp.length > 32 ? m.disp.slice(0, 29) + "..." : m.disp;
+    row.push({ text: label, callback_data: "m:" + (start + i) });
+    if (row.length === 2) { buttons.push(row); row = []; }
+  }
+  if (row.length) buttons.push(row);
+  const nav = [];
+  if (page > 0) nav.push({ text: "◀️ Prev", callback_data: "mp:" + (page - 1) });
+  nav.push({ text: `Hal ${page + 1}/${total}`, callback_data: "noop" });
+  if (page < total - 1) nav.push({ text: "Next ▶️", callback_data: "mp:" + (page + 1) });
+  nav.push({ text: "✖️", callback_data: "m:c" });
+  buttons.push(nav);
+  return { buttons, page, total };
+}
+
 export async function sendModelList(env, chatId, header) {
   const allModels = await getAllModels(env);
-  const pickId = buildPickId(chatId);
-  const items = allModels.map((m) => ({
-    realLabel: m.realLabel,
-    disp: m.disp
-  }));
-  modelPickMemory.set(pickId, items);
-
-  const buttons = [];
-  let rows = [];
-  for (let i = 0; i < items.length; i++) {
-    const label = items[i].disp.length > 30 ? items[i].disp.slice(0, 27) + "..." : items[i].disp;
-    rows.push({ text: label, callback_data: "m:" + i });
-    if (rows.length >= 2) {
-      buttons.push(rows);
-      rows = [];
-    }
+  if (!allModels.length) {
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, header + "\n\nBelum ada provider. Tambah dengan /addprovider");
+    return;
   }
-  if (rows.length) buttons.push(rows);
-  buttons.push([{ text: " Batal", callback_data: "m:c" }]);
-
-  const chunks = await buildModelChunks(env);
-  const listText = chunks.join("\n\n");
-  await sendTelegramInlineKeyboard(env.TELEGRAM_TOKEN, chatId, header + "\n\n" + listText, buttons);
+  const items = allModels.map((m) => ({ realLabel: m.realLabel, disp: m.disp, provider: m.provider }));
+  const pickId = buildPickId(chatId);
+  modelPickMemory.set(pickId, items);
+  const { buttons } = pageButtons(items, 0);
+  await sendTelegramInlineKeyboard(
+    env.TELEGRAM_TOKEN,
+    chatId,
+    header + "\n\n" + items.length + " model tersedia. Tap untuk pilih:",
+    buttons
+  );
 }
 
 export async function handleModelCallback(callbackData, env, chatId, fromId, callbackQueryId, messageId) {
+  const pickId = buildPickId(chatId);
+  const items = modelPickMemory.get(pickId);
+
+  if (callbackData === "noop") {
+    await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "");
+    return;
+  }
+
+  if (callbackData.startsWith("mp:")) {
+    if (!items) {
+      await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Daftar kedaluwarsa. Kirim /model lagi.");
+      return;
+    }
+    const { buttons } = pageButtons(items, parseInt(callbackData.slice(3), 10) || 0);
+    await editMessageReplyMarkup(env.TELEGRAM_TOKEN, chatId, messageId, buttons);
+    await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "");
+    return;
+  }
+
   if (!callbackData.startsWith("m:")) return;
   const payload = callbackData.slice(2);
 
@@ -188,20 +222,17 @@ export async function handleModelCallback(callbackData, env, chatId, fromId, cal
   }
 
   const idx = parseInt(payload, 10);
-  const pickId = buildPickId(chatId);
-  const items = modelPickMemory.get(pickId);
   if (!items || !items[idx]) {
     await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Kedaluwarsa. Kirim /model lagi.");
     return;
   }
 
   const chosen = items[idx];
-  const saveName = chosen.realLabel;
-  await setActiveModel(env, chatId, saveName);
+  await setActiveModel(env, chatId, chosen.realLabel);
   modelPickMemory.delete(pickId);
   await editMessageReplyMarkup(env.TELEGRAM_TOKEN, chatId, messageId, []);
-  await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Model: " + chosen.disp);
-  await editMessageText(env.TELEGRAM_TOKEN, chatId, messageId, "Model aktif: " + chosen.disp + "\nProvider: " + saveName.split(":")[1]);
+  await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Tersimpan: " + chosen.disp);
+  await editMessageText(env.TELEGRAM_TOKEN, chatId, messageId, "Model aktif: " + chosen.disp + "\nProvider: " + chosen.provider);
 }
 
 /**
