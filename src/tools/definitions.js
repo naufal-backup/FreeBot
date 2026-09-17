@@ -280,11 +280,11 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "google_read_doc",
-      description: 'Baca isi dokumen Google Docs. Panggil saat user minta "baca dokumen Google", "read Google doc", "ambil isi doc".',
+      description: 'Baca isi dokumen Google Docs. Kirim link Google Docs atau document_id. Panggil saat user minta "baca dokumen", "baca link ini", "ambil isi doc".',
       parameters: {
         type: "object",
         properties: {
-          document_id: { type: "string", description: "Document ID dari Google Docs (bisa dari URL)" }
+          document_id: { type: "string", description: "Link Google Docs atau document_id" }
         },
         required: ["document_id"]
       }
@@ -294,11 +294,11 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "google_append_doc",
-      description: 'Tambahkan teks ke dokumen Google Docs. Panggil saat user minta "tambah isi doc", "append ke dokumen".',
+      description: 'Tambahkan teks ke dokumen Google Docs. Kirim link atau document_id. Panggil saat user minta "tambah isi doc", "append ke dokumen", "edit doc ini".',
       parameters: {
         type: "object",
         properties: {
-          document_id: { type: "string", description: "Document ID" },
+          document_id: { type: "string", description: "Link Google Docs atau document_id" },
           text: { type: "string", description: "Teks yang akan ditambahkan" }
         },
         required: ["document_id", "text"]
@@ -309,11 +309,11 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "google_share_doc",
-      description: 'Share dokumen Google Docs ke email lain. Panggil saat user minta "share dokumen", "bagikan doc".',
+      description: 'Share dokumen Google Docs ke email lain. Kirim link atau document_id. Panggil saat user minta "share dokumen", "bagikan doc".',
       parameters: {
         type: "object",
         properties: {
-          document_id: { type: "string", description: "Document ID" },
+          document_id: { type: "string", description: "Link Google Docs atau document_id" },
           email: { type: "string", description: "Email tujuan" },
           role: { type: "string", description: "Permission: reader, writer, comment (default: reader)" }
         },

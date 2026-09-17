@@ -5,6 +5,44 @@
 const PEM_HEADER = "-----BEGIN PRIVATE KEY-----";
 const PEM_FOOTER = "-----END PRIVATE KEY-----";
 
+export function extractDocIdFromUrl(input) {
+  if (!input) return null;
+  // Already a plain document ID (no slashes, reasonable length)
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(input.trim())) return input.trim();
+  // Extract from Google Docs URL patterns
+  const patterns = [
+    /\/document\/d\/([a-zA-Z0-9_-]+)/,
+    /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/,
+    /\/presentation\/d\/([a-zA-Z0-9_-]+)/
+  ];
+  for (const pat of patterns) {
+    const m = input.match(pat);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+export function isPermissionError(msg) {
+  return /permission|forbidden|403|has not been shared/i.test(msg || "");
+}
+
+export function permissionDeniedHint() {
+  const email = "telegram-bot@telegram-bot-508911.iam.gserviceaccount.com";
+  return [
+    "Dokumen ini belum di-share ke service account.",
+    "",
+    "Untuk memberi izin, share dokumen ini ke:",
+    `\u{1F4E7} ${email}`,
+    "(role: Editor)",
+    "",
+    "Cara share:",
+    "1. Buka dokumen di Google Docs",
+    '2. Klik "Share" \u2192 masukkan email di atas',
+    '3. Pilih role "Editor"',
+    '4. Klik "Send"'
+  ].join("\n");
+}
+
 export async function getGoogleAccessToken(serviceAccountJson) {
   const sa = typeof serviceAccountJson === "string" ? JSON.parse(serviceAccountJson) : serviceAccountJson;
   const { client_email, private_key } = sa;

@@ -21,7 +21,7 @@ import { getServiceToken, getStorageUsage } from "../storage.js";
 import { saveCustomTool, getCustomTools, deleteCustomTool, executeCustomTool } from "../skills.js";
 import { getAllModels, resolveModelLabel, setActiveModel } from "../models.js";
 import { renderTemplate } from "../templates.js";
-import { getGoogleAccessToken, createGoogleDoc, readGoogleDoc, appendGoogleDoc, shareGoogleDoc } from "../google.js";
+import { getGoogleAccessToken, createGoogleDoc, readGoogleDoc, appendGoogleDoc, shareGoogleDoc, extractDocIdFromUrl, isPermissionError, permissionDeniedHint } from "../google.js";
 
 export async function toolWebsearch(query) {
   if (!query) return "Query tidak boleh kosong.";
@@ -427,20 +427,21 @@ export async function executeTool(toolCall, env, chatId, fromId) {
       }
 
       case "google_read_doc": {
-        const docId = args.document_id;
-        if (!docId) return "document_id harus diisi.";
+        const docId = extractDocIdFromUrl(args.document_id || args.url || args.link);
+        if (!docId) return "document_id tidak valid. Kirim link Google Docs atau document_id.";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
           const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
           const doc = await readGoogleDoc(token, docId);
           return `**${doc.title}**\n\n${doc.content.slice(0, 8000)}`;
         } catch (e) {
+          if (isPermissionError(e.message)) return permissionDeniedHint();
           return `\u274C Gagal baca dokumen: ${e.message}`;
         }
       }
 
       case "google_append_doc": {
-        const docId = args.document_id;
+        const docId = extractDocIdFromUrl(args.document_id || args.url || args.link);
         const text = args.text;
         if (!docId || !text) return "document_id dan text harus diisi.";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
@@ -450,12 +451,13 @@ export async function executeTool(toolCall, env, chatId, fromId) {
           const url = `https://docs.google.com/document/d/${docId}/edit`;
           return `\u2705 Teks berhasil ditambahkan ke dokumen.\n${url}`;
         } catch (e) {
+          if (isPermissionError(e.message)) return permissionDeniedHint();
           return `\u274C Gagal append: ${e.message}`;
         }
       }
 
       case "google_share_doc": {
-        const docId = args.document_id;
+        const docId = extractDocIdFromUrl(args.document_id || args.url || args.link);
         const email = args.email;
         const role = args.role || "reader";
         if (!docId || !email) return "document_id dan email harus diisi.";
@@ -465,6 +467,7 @@ export async function executeTool(toolCall, env, chatId, fromId) {
           await shareGoogleDoc(token, docId, email, role);
           return `\u2705 Dokumen berhasil di-share ke ${email} (${role})`;
         } catch (e) {
+          if (isPermissionError(e.message)) return permissionDeniedHint();
           return `\u274C Gagal share: ${e.message}`;
         }
       }
