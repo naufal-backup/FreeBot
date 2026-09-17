@@ -326,6 +326,37 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
 
       const messages = [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: userText }];
 
+      // Pre-execute Google Docs/Sheets tools if URL detected in user message
+      const gUrlMatch = userText.match(/https:\/\/docs\.google\.com\/(spreadsheets|document)\/d\/[a-zA-Z0-9_-]+/);
+      if (gUrlMatch && env.GOOGLE_SERVICE_ACCOUNT) {
+        try {
+          const { getGoogleAccessToken, extractDocIdFromUrl, extractSheetIdFromUrl, readGoogleDoc, readGoogleSheet } = await import("./google.js");
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const url = gUrlMatch[0];
+          let toolResult;
+          if (url.includes("/spreadsheets/")) {
+            const sid = extractSheetIdFromUrl(url);
+            toolResult = await readGoogleSheet(token, sid);
+            if (toolResult?.rows?.length) {
+              const header = toolResult.rows[0] || [];
+              const rows = toolResult.rows.slice(1);
+              let output = `**${toolResult.title}**\n\nKolom: ${header.join(" | ")}\n${"-".repeat(40)}\n`;
+              for (const row of rows.slice(0, 50)) output += row.join(" | ") + "\n";
+              if (rows.length > 50) output += `\n... dan ${rows.length - 50} baris lagi`;
+              messages.push({ role: "user", content: `[Google Sheets data]\n${output}` });
+            }
+          } else {
+            const did = extractDocIdFromUrl(url);
+            toolResult = await readGoogleDoc(token, did);
+            if (toolResult?.text) {
+              messages.push({ role: "user", content: `[Google Docs content]\n${toolResult.text.slice(0, 8000)}` });
+            }
+          }
+        } catch (e) {
+          console.log("[PRE-EXEC] Google tool error:", e.message);
+        }
+      }
+
       let finalContent = "";
       let iterations = 0;
       const toolCallHistory = [];
