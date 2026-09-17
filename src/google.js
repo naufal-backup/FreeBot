@@ -232,18 +232,20 @@ export async function readGoogleSheet(accessToken, spreadsheetId, range) {
     }
   } catch {}
 
-  // If range is not provided or contains default "Sheet1", use actual sheet name
-  let r = range;
-  if (!r || r.startsWith("Sheet1!")) {
-    r = r ? r.replace("Sheet1", sheetName) : `${sheetName}!A1:Z1000`;
-  }
+  // Always ensure range includes actual sheet name
+  let r = range || `${sheetName}!A1:Z1000`;
+  if (r.startsWith("Sheet1!")) r = r.replace("Sheet1", sheetName);
+  if (!r.includes("!")) r = `${sheetName}!${r}`;
 
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(r)}?valueRenderOption=FORMATTED_VALUE`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || "Gagal baca spreadsheet");
+  if (!res.ok) {
+    console.log('[SHEETS] Error range:', r, 'status:', res.status, 'error:', data?.error?.message);
+    throw new Error(data?.error?.message || "Gagal baca spreadsheet");
+  }
   const rows = data.values || [];
   return { title: data.range, rows, spreadsheetId, sheetName };
 }
