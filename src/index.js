@@ -300,6 +300,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       let finalContent = "";
       let iterations = 0;
       const toolCallHistory = [];
+      const sentFiles = new Set();
       const loopStartTime = Date.now();
       const MAX_LOOP_TIME_MS = 60000;
 
@@ -365,12 +366,21 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
               finalContent = "Proses dihentikan oleh user.";
               break;
             }
+            // Skip duplicate file sends
+            const fnName = tc.function?.name;
+            if ((fnName === "generate_file" || fnName === "generate_pdf") && sentFiles.has(tc.function?.arguments)) {
+              messages.push({ role: "tool", tool_call_id: tc.id, content: "File sudah dikirim sebelumnya, dilewati." });
+              continue;
+            }
             const result = await executeTool(tc, env, chatId, fromId);
+            if (fnName === "generate_file" || fnName === "generate_pdf") {
+              sentFiles.add(tc.function?.arguments);
+            }
             messages.push({ role: "tool", tool_call_id: tc.id, content: result });
             const callKey = `${tc.function?.name}:${tc.function?.arguments}`;
             toolCallHistory.push(callKey);
             const sameCount = toolCallHistory.filter((k) => k === callKey).length;
-            if (sameCount >= 3) {
+            if (sameCount >= 2) {
               finalContent = "Saya sepertinya stuck memanggil tool yang sama. Berikut jawaban berdasarkan apa yang sudah saya dapat:\n\n" + (finalMsg.content || "Coba jelaskan dengan lebih spesifik agar saya bisa bantu.");
               break;
             }
