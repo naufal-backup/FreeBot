@@ -10,8 +10,9 @@ import { canonicalIdentityAnswer } from "./identity.js";
 import { getActiveModel, getActiveApi, resolveApiEndpoint } from "./models.js";
 import { getChatMemory, saveChatMemory, summarizeHistory, getCavemanMode } from "./storage.js";
 import { getAllToolDefinitions } from "./tools/definitions.js";
-import { executeTool } from "./tools/executor.js";
+import { executeTool, executePendingAction } from "./tools/executor.js";
 import { getGoogleAccessToken, extractDocIdFromUrl, extractSheetIdFromUrl, readGoogleDoc, readGoogleSheet } from "./google.js";
+import { getPendingAction, clearPendingAction } from "./pendingActions.js";
 
 import { handleBasicCommands } from "./commands/basic.js";
 import { handleAuthCommands } from "./commands/auth.js";
@@ -19,6 +20,7 @@ import { handleApiCommands } from "./commands/apiConfig.js";
 import { handleProjectCommands } from "./commands/projects.js";
 import { handleScheduleCommands } from "./commands/schedule.js";
 import { handleDocplainCommand } from "./commands/docplain.js";
+import { handleGoogleSetupCommands } from "./commands/googleSetup.js";
 
 // Command groups tried, in order, once the user has passed the allow-list
 // check. Each handler returns true if it matched & handled the command.
@@ -28,7 +30,8 @@ const COMMAND_HANDLERS = [
   handleApiCommands,
   handleProjectCommands,
   handleScheduleCommands,
-  handleDocplainCommand
+  handleDocplainCommand,
+  handleGoogleSetupCommands
 ];
 
 // Serialize AI processing per chat to prevent race conditions
@@ -193,6 +196,30 @@ export default {
 
     // Clear cancellation flag at start of new task
     chatCancelled.delete(chatId);
+
+    // --- Handle pending action confirmation (ya/batal) ---
+    const pendingAction = getPendingAction(chatId);
+    if (pendingAction && !cmdWord.startsWith("/")) {
+      const lowerText = userText.trim().toLowerCase();
+      if (lowerText === "ya" || lowerText === "y" || lowerText === "oke" || lowerText === "ok") {
+        clearPendingAction(chatId);
+        const thinkingMsg = await sendTelegram(env.TELEGRAM_TOKEN, chatId, "⏳ Menjalankan...");
+        const thinkingMsgId = thinkingMsg?.result?.message_id;
+        const result = await executePendingAction(pendingAction, env, chatId);
+        if (thinkingMsgId) {
+          await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, result);
+        } else {
+          await sendTelegram(env.TELEGRAM_TOKEN, chatId, result);
+        }
+        return new Response("OK", { status: 200 });
+      }
+      if (lowerText === "batal" || lowerText === "cancel" || lowerText === "no") {
+        clearPendingAction(chatId);
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, "❌ Dibatalkan.");
+        return new Response("OK", { status: 200 });
+      }
+      // Other text — let AI handle it, but note there's a pending action
+    }
 
     // --- Slash commands -------------------------------------------------
     if (cmdWord.startsWith("/")) {

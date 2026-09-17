@@ -195,6 +195,7 @@ commands = [
   ("sb_status","Cek Supabase"),("logout_sb","Hapus token Supabase"),
   ("cron","Buat cron harian"),("crons","Daftar cron"),("delcron","Hapus cron"),
   ("remind","Buat pengingat"),("reminds","Daftar pengingat"),
+  ("google-setup","Panduan setup Google Cloud"),("google-status","Cek status Google"),
   ("addprovider","Tambah AI provider"),("delprovider","Hapus provider"),("providers","Daftar provider"),
 ]
 body = json.dumps({"commands":[{"command":c,"description":d} for c,d in commands]})
@@ -226,6 +227,7 @@ echo "    - Voice transcription (butuh setup audio worker)"
 echo "    - GitHub integration (repo, commit, branch)"
 echo "    - Supabase project management"
 echo "    - Cron tasks & reminders"
+echo "    - Google Docs/Sheets (baca, tulis, buat spreadsheet)"
 echo ""
 echo "  Langkah selanjutnya (via Telegram):"
 echo "    1. Chat bot → /start"
@@ -234,6 +236,11 @@ echo "    3. Kalau perlu ubah ALLOWED_USER_IDS:"
 echo "       npx wrangler secret put ALLOWED_USER_IDS"
 echo "    4. Sambung GitHub: /login-gh → buat token → /token-gh <token>"
 echo "    5. /newproject <nama> → buat project baru"
+echo "    6. Setup Google: /google-setup → ikuti panduan langkah demi langkah"
+echo ""
+echo "  Google Docs/Sheets:"
+echo "    /google-setup  → panduan lengkap setup Google Cloud"
+echo "    /google-status → cek apakah Google sudah terkonfigurasi"
 echo ""
 echo "  Butuh transkripsi voice? Setup audio worker manual:"
 echo "    Lihat dokumentasi di https://github.com/naufal-backup/FreeBot#readme"

@@ -24,6 +24,7 @@ Bot bisa: chat AI, memori per-akun, ganti model, buat project + repo GitHub, kel
 - **Image OCR** — baca teks dari gambar via Cloudflare Workers AI (gratis)
 - **Transkripsi Voice Note** — kirim VN, bot transkrip pakai Whisper via Workers AI
 - **Cron Tasks & Reminders** — jadwalkan tugas harian dan pengingat
+- **Google Docs/Sheets** — baca, tulis, buat, share spreadsheet/dokumen langsung dari chat
 - **Markdown Telegram** — bold, italic, code, strikethrough, tabel, header
 - **Identitas tetap** — jawaban "siapa kamu?" deterministik
 - **Akses terkunci** — hanya `ALLOWED_USER_IDS` yang boleh pakai
@@ -141,6 +142,8 @@ FreeBot/
 /delcron        Hapus cron
 /remind         Buat pengingat
 /reminds        Daftar pengingat
+/google-setup   Panduan setup Google Cloud
+/google-status  Cek status Google integration
 /addprovider    Tambah AI provider
 /delprovider    Hapus provider
 /providers      Daftar provider
@@ -156,6 +159,32 @@ FreeBot/
 | Plain Text | `.txt` | Langsung baca |
 | Markdown | `.md` | Langsung baca |
 | Gambar | `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif` | OCR via Cloudflare AI |
+
+## Google Docs/Sheets Integration
+
+Bot bisa membaca, menulis, dan mengelola Google Sheets/Docs langsung dari chat.
+
+### Setup
+
+1. Kirim `/google-setup` ke bot → ikuti panduan langkah demi langkah
+2. Buat Google Cloud project, enable API, buat service account
+3. Download JSON key → kirim ke bot
+4. Kirim `/google-status` untuk verifikasi
+
+### Fitur
+
+- **Auto-read** — kirim link Google Sheets/Docs → bot otomatis baca isinya
+- **Write/Append** — minta bot isi data ke spreadsheet (dengan konfirmasi dulu)
+- **Create** — minta bot buat spreadsheet baru (dengan konfirmasi dulu)
+- **Share** — minta bot share dokumen ke email tertentu
+- **Zero hardcode** — semua nama sheet auto-detect dari metadata
+
+### Keamanan
+
+- Edit/write/append selalu meminta konfirmasi dulu
+- Konfirmasi tampilkan: judul spreadsheet, range, jumlah baris
+- User harus balas "ya" untuk eksekusi
+- Timeout 2 menit otomatis batalkan
 
 ## Teknologi
 

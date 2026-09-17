@@ -8,6 +8,7 @@ import { markdownToHtml } from "../utils/markdown.js";
 import { generatePdfHtml } from "../utils/pdfTemplate.js";
 import { sendTelegramDocument } from "../telegram.js";
 import { extractDocumentText } from "../documents.js";
+import { setPendingAction } from "../pendingActions.js";
 import {
   validateGithubToken,
   createGithubRepo,
@@ -475,13 +476,16 @@ export async function executeTool(toolCall, env, chatId, fromId) {
       case "google_create_sheet": {
         const sheetTitle = args.title || "Spreadsheet Baru";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
-        try {
-          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
-          const sheet = await createGoogleSheet(token, sheetTitle);
-          return `\u2705 Spreadsheet berhasil dibuat!\n\n**${sheet.title}**\n${sheet.url}`;
-        } catch (e) {
-          return `\u274C Gagal buat spreadsheet: ${e.message}`;
-        }
+
+        setPendingAction(chatId, {
+          type: "google_create_sheet",
+          args: { title: sheetTitle }
+        });
+
+        let confirm = `⚠️ Konfirmasi BUAT spreadsheet baru:\n`;
+        confirm += `📄 Judul: ${sheetTitle}\n`;
+        confirm += `\nKetik "ya" untuk lanjut atau "batal" untuk batalkan.`;
+        return confirm;
       }
 
       case "google_read_sheet": {
@@ -514,14 +518,26 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         if (!sheetId || !values) return "spreadsheet_id dan values harus diisi.";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
-          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
           const parsed = typeof values === "string" ? JSON.parse(values) : values;
-          const result = await writeGoogleSheet(token, sheetId, args.range, parsed);
-          const url = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
-          return `\u2705 Berhasil tulis ${result.updatedCells} sel ke spreadsheet.\n${url}`;
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const meta = await readGoogleSheet(token, sheetId, args.range);
+          const sheetName = meta.sheetName || "Sheet1";
+          const range = args.range || `${sheetName}!A1`;
+          const rowCount = Array.isArray(parsed) ? (Array.isArray(parsed[0]) ? parsed.length : 1) : 1;
+
+          setPendingAction(chatId, {
+            type: "google_write_sheet",
+            args: { spreadsheet_id: sheetId, range, values: parsed }
+          });
+
+          let confirm = `⚠️ Konfirmasi TULIS ke spreadsheet:\n`;
+          confirm += `📄 ${meta.title || sheetId}\n`;
+          confirm += `📍 Range: ${range}\n`;
+          confirm += `📊 Data: ${rowCount} baris\n`;
+          confirm += `\nKetik "ya" untuk lanjut atau "batal" untuk batalkan.`;
+          return confirm;
         } catch (e) {
-          if (isPermissionError(e.message)) return permissionDeniedHint();
-          return `\u274C Gagal tulis: ${e.message}`;
+          return `\u274C Gagal siapkan tulis: ${e.message}`;
         }
       }
 
@@ -531,14 +547,26 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         if (!sheetId || !values) return "spreadsheet_id dan values harus diisi.";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
-          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
           const parsed = typeof values === "string" ? JSON.parse(values) : values;
-          const result = await appendGoogleSheet(token, sheetId, args.range, parsed);
-          const url = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
-          return `\u2705 Berhasil append ${result.updatedCells} sel ke spreadsheet.\n${url}`;
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const meta = await readGoogleSheet(token, sheetId, args.range);
+          const sheetName = meta.sheetName || "Sheet1";
+          const range = args.range || `${sheetName}!A:Z`;
+          const rowCount = Array.isArray(parsed) ? (Array.isArray(parsed[0]) ? parsed.length : 1) : 1;
+
+          setPendingAction(chatId, {
+            type: "google_append_sheet",
+            args: { spreadsheet_id: sheetId, range, values: parsed }
+          });
+
+          let confirm = `⚠️ Konfirmasi APPEND ke spreadsheet:\n`;
+          confirm += `📄 ${meta.title || sheetId}\n`;
+          confirm += `📍 Range: ${range}\n`;
+          confirm += `📊 Data: ${rowCount} baris baru\n`;
+          confirm += `\nKetik "ya" untuk lanjut atau "batal" untuk batalkan.`;
+          return confirm;
         } catch (e) {
-          if (isPermissionError(e.message)) return permissionDeniedHint();
-          return `\u274C Gagal append: ${e.message}`;
+          return `\u274C Gagal siapkan append: ${e.message}`;
         }
       }
 
@@ -674,5 +702,30 @@ export async function executeTool(toolCall, env, chatId, fromId) {
   } catch (err) {
     console.error(`Tool ${name} error:`, err.message);
     return `Error saat menjalankan ${name}: ${err.message}`;
+  }
+}
+
+export async function executePendingAction(action, env, chatId) {
+  try {
+    const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+    if (action.type === "google_write_sheet") {
+      const { spreadsheet_id, range, values } = action.args;
+      const result = await writeGoogleSheet(token, spreadsheet_id, range, values);
+      const url = `https://docs.google.com/spreadsheets/d/${spreadsheet_id}/edit`;
+      return `\u2705 Berhasil tulis ${result.updatedCells} sel ke spreadsheet.\n${url}`;
+    }
+    if (action.type === "google_append_sheet") {
+      const { spreadsheet_id, range, values } = action.args;
+      const result = await appendGoogleSheet(token, spreadsheet_id, range, values);
+      const url = `https://docs.google.com/spreadsheets/d/${spreadsheet_id}/edit`;
+      return `\u2705 Berhasil append ${result.updatedCells} sel ke spreadsheet.\n${url}`;
+    }
+    if (action.type === "google_create_sheet") {
+      const sheet = await createGoogleSheet(token, action.args.title);
+      return `\u2705 Spreadsheet berhasil dibuat!\n\n**${sheet.title}**\n${sheet.url}`;
+    }
+    return "Action tidak dikenal.";
+  } catch (e) {
+    return `\u274C Gagal eksekusi: ${e.message}`;
   }
 }

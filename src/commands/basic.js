@@ -7,7 +7,7 @@ import { getCavemanMode, setCavemanMode } from "../storage.js";
 import { getCustomTools, deleteCustomTool } from "../skills.js";
 
 const HELP_TEXT =
-  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model\n/models - daftar model dari provider\n/reset - hapus memori chat\n/myid - lihat ID\n/caveman - toggle hemat token\n/skills - lihat skill custom\n/delskill <nama> - hapus skill\n/addprovider <id> <url> <key> [models] - tambah provider\n/providers - lihat provider\ndelprovider <id> - hapus provider\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, gambar (OCR).\nKetik teks bebas untuk chat AI.";
+  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model\n/models - daftar model dari provider\n/reset - hapus memori chat\n/myid - lihat ID\n/caveman - toggle hemat token\n/skills - lihat skill custom\n/delskill <nama> - hapus skill\n/addprovider <id> <url> <key> [models] - tambah provider\n/providers - lihat provider\n/delprovider <id> - hapus provider\n/google-setup - panduan setup Google Cloud\n/google-status - cek status Google integration\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, gambar (OCR).\nKirim link Google Sheets/Docs → bot auto-baca.\nKetik teks bebas untuk chat AI.";
 
 export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, messageId) {
   if (cmdWord === "/start") {
