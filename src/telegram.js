@@ -7,7 +7,7 @@ import { arrayBufferToBase64 } from "./utils/format.js";
 
 export async function sendTelegram(botToken, chat_id, text) {
   const html = markdownToHtml(text);
-  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -17,6 +17,23 @@ export async function sendTelegram(botToken, chat_id, text) {
       disable_web_page_preview: true
     })
   });
+  return await res.json();
+}
+
+export async function editMessageText(botToken, chat_id, message_id, text) {
+  const html = markdownToHtml(text);
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id,
+      message_id,
+      text: html,
+      parse_mode: "HTML",
+      disable_web_page_preview: true
+    })
+  });
+  return await res.json();
 }
 
 export async function sendTelegramDocument(botToken, chatId, fileName, content) {

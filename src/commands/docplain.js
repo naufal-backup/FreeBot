@@ -1,7 +1,7 @@
 // src/commands/docplain.js
 // /docplain — extract PDF text to .md file (pure CPU, no AI)
 
-import { sendTelegram, sendTelegramDocument, startTyping } from "../telegram.js";
+import { sendTelegram, editMessageText, sendTelegramDocument, startTyping } from "../telegram.js";
 import { extractPdfText } from "../documents.js";
 
 export async function handleDocplainCommand(cmdWord, cmdArg, env, chatId, fromId, messageId, docInfo) {
@@ -11,6 +11,9 @@ export async function handleDocplainCommand(cmdWord, cmdArg, env, chatId, fromId
     await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Kirim PDF sebagai lampiran bersama /docplain");
     return true;
   }
+
+  const thinkingMsg = await sendTelegram(env.TELEGRAM_TOKEN, chatId, "📄 Membaca dokumen...");
+  const thinkingMsgId = thinkingMsg?.result?.message_id;
 
   const stopTyping = startTyping(env.TELEGRAM_TOKEN, chatId);
   try {
@@ -46,9 +49,17 @@ export async function handleDocplainCommand(cmdWord, cmdArg, env, chatId, fromId
     const mdFileName = fileName.replace(/\.pdf$/i, ".md");
 
     await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, mdFileName, mdContent);
+    if (thinkingMsgId) {
+      await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, `✅ Selesai! ${mdFileName} sudah dikirim.`);
+    }
   } catch (err) {
     console.error("[DOCPlain] Error:", err.message);
-    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Gagal mengekstrak teks: " + err.message);
+    const errorText = "Gagal mengekstrak teks: " + err.message;
+    if (thinkingMsgId) {
+      await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, errorText);
+    } else {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, errorText);
+    }
   } finally {
     stopTyping();
   }

@@ -3,7 +3,7 @@
 // Cron Trigger (scheduled) to the rest of the modules.
 
 import { MAX_TOOL_ITERATIONS, MEMORY_MAX_ENTRIES } from "./config.js";
-import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote, startTyping, registerBotCommands } from "./telegram.js";
+import { sendTelegram, editMessageText, deleteTelegramMessage, transcribeVoiceNote, startTyping, registerBotCommands } from "./telegram.js";
 import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
@@ -303,6 +303,10 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       const loopStartTime = Date.now();
       const MAX_LOOP_TIME_MS = 60000;
 
+      // Send thinking message
+      const thinkingMsg = await sendTelegram(env.TELEGRAM_TOKEN, chatId, "🤔 Thinking...");
+      const thinkingMsgId = thinkingMsg?.result?.message_id;
+
       // Periodic typing indicator — refresh every 4 seconds, auto-expires
       const stopTyping = startTyping(env.TELEGRAM_TOKEN, chatId);
 
@@ -384,14 +388,23 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         stopTyping();
       }
 
-      await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
+      if (thinkingMsgId) {
+        await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, String(finalContent).trim().slice(0, 4096));
+      } else {
+        await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));
+      }
       history = [...history, { role: "user", content: userText }, { role: "assistant", content: String(finalContent).trim() }];
       await saveChatMemory(env, chatId, history);
     } catch (err) {
       console.error(err);
       try {
         const errMsg = err.message || "Unknown error";
-        await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Error: ${errMsg.slice(0, 500)}`);
+        const errorText = `Error: ${errMsg.slice(0, 500)}`;
+        if (thinkingMsgId) {
+          await editMessageText(env.TELEGRAM_TOKEN, chatId, thinkingMsgId, errorText);
+        } else {
+          await sendTelegram(env.TELEGRAM_TOKEN, chatId, errorText);
+        }
       } catch {
         // best effort
       }
