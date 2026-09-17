@@ -486,12 +486,11 @@ export async function executeTool(toolCall, env, chatId, fromId) {
 
       case "google_read_sheet": {
         const sheetId = extractSheetIdFromUrl(args.spreadsheet_id || args.url || args.link);
-        const range = args.range || "Sheet1!A1:Z1000";
         if (!sheetId) return "spreadsheet_id tidak valid. Kirim link Google Sheets atau spreadsheet_id.";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
           const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
-          const data = await readGoogleSheet(token, sheetId, range);
+          const data = await readGoogleSheet(token, sheetId, args.range);
           if (!data.rows.length) return "Spreadsheet kosong.";
           const header = data.rows[0] || [];
           const rows = data.rows.slice(1);
@@ -511,14 +510,13 @@ export async function executeTool(toolCall, env, chatId, fromId) {
 
       case "google_write_sheet": {
         const sheetId = extractSheetIdFromUrl(args.spreadsheet_id || args.url || args.link);
-        const range = args.range || "Sheet1!A1";
         const values = args.values;
         if (!sheetId || !values) return "spreadsheet_id dan values harus diisi.";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
           const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
           const parsed = typeof values === "string" ? JSON.parse(values) : values;
-          const result = await writeGoogleSheet(token, sheetId, range, parsed);
+          const result = await writeGoogleSheet(token, sheetId, args.range, parsed);
           const url = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
           return `\u2705 Berhasil tulis ${result.updatedCells} sel ke spreadsheet.\n${url}`;
         } catch (e) {
@@ -529,14 +527,13 @@ export async function executeTool(toolCall, env, chatId, fromId) {
 
       case "google_append_sheet": {
         const sheetId = extractSheetIdFromUrl(args.spreadsheet_id || args.url || args.link);
-        const range = args.range || "Sheet1!A:Z";
         const values = args.values;
         if (!sheetId || !values) return "spreadsheet_id dan values harus diisi.";
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
           const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
           const parsed = typeof values === "string" ? JSON.parse(values) : values;
-          const result = await appendGoogleSheet(token, sheetId, range, parsed);
+          const result = await appendGoogleSheet(token, sheetId, args.range, parsed);
           const url = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
           return `\u2705 Berhasil append ${result.updatedCells} sel ke spreadsheet.\n${url}`;
         } catch (e) {

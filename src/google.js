@@ -218,55 +218,37 @@ export async function createGoogleSheet(accessToken, title) {
   return { spreadsheetId: data.spreadsheetId, title: data.properties.title, url: data.spreadsheetUrl };
 }
 
-export async function readGoogleSheet(accessToken, spreadsheetId, range) {
-  // First, get the actual sheet name from metadata
-  let sheetName = "Sheet1";
-  try {
-    const metaRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    const meta = await metaRes.json();
-    if (meta.sheets?.[0]?.properties?.title) {
-      sheetName = meta.sheets[0].properties.title;
-    }
-  } catch {}
+async function getSheetName(accessToken, spreadsheetId) {
+  const metaRes = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  const meta = await metaRes.json();
+  if (!meta.sheets?.length) throw new Error("Spreadsheet tidak memiliki sheet");
+  return meta.sheets[0].properties.title;
+}
 
-  // Always ensure range includes actual sheet name
-  let r = range || `${sheetName}!A1:Z1000`;
-  if (r.startsWith("Sheet1!")) r = r.replace("Sheet1", sheetName);
-  if (!r.includes("!")) r = `${sheetName}!${r}`;
+function resolveRange(range, sheetName) {
+  if (!range) return `${sheetName}!A1`;
+  if (range.includes("!")) {
+    const parts = range.split("!");
+    return `${sheetName}!${parts[parts.length - 1]}`;
+  }
+  return `${sheetName}!${range}`;
+}
+
+export async function readGoogleSheet(accessToken, spreadsheetId, range) {
+  const sheetName = await getSheetName(accessToken, spreadsheetId);
+  const r = resolveRange(range, sheetName);
 
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(r)}?valueRenderOption=FORMATTED_VALUE`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
   const data = await res.json();
-  if (!res.ok) {
-    console.log('[SHEETS] Error range:', r, 'status:', res.status, 'error:', data?.error?.message);
-    throw new Error(data?.error?.message || "Gagal baca spreadsheet");
-  }
+  if (!res.ok) throw new Error(data?.error?.message || "Gagal baca spreadsheet");
   const rows = data.values || [];
   return { title: data.range, rows, spreadsheetId, sheetName };
-}
-
-async function getSheetName(accessToken, spreadsheetId) {
-  try {
-    const metaRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    const meta = await metaRes.json();
-    return meta.sheets?.[0]?.properties?.title || "Sheet1";
-  } catch {
-    return "Sheet1";
-  }
-}
-
-function resolveRange(range, sheetName) {
-  if (!range) return `${sheetName}!A1`;
-  if (range.startsWith("Sheet1!")) return range.replace("Sheet1", sheetName);
-  return range;
 }
 
 export async function writeGoogleSheet(accessToken, spreadsheetId, range, values) {

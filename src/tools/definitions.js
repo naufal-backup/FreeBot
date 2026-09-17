@@ -344,7 +344,7 @@ export const TOOL_DEFINITIONS = [
         type: "object",
         properties: {
           spreadsheet_id: { type: "string", description: "Link Google Sheets atau spreadsheet_id" },
-          range: { type: "string", description: "Range sel (default: Sheet1!A1:Z1000)" }
+          range: { type: "string", description: "Range sel (opsional, auto-detect dari spreadsheet)" }
         },
         required: ["spreadsheet_id"]
       }
@@ -359,7 +359,7 @@ export const TOOL_DEFINITIONS = [
         type: "object",
         properties: {
           spreadsheet_id: { type: "string", description: "Link Google Sheets atau spreadsheet_id" },
-          range: { type: "string", description: "Range sel (default: Sheet1!A1)" },
+          range: { type: "string", description: "Range sel (opsional, auto-detect dari spreadsheet)" },
           values: { type: "string", description: 'Data dalam format JSON array, contoh: [["Nama","Umur"],["Budi",25]]' }
         },
         required: ["spreadsheet_id", "values"]
@@ -375,7 +375,7 @@ export const TOOL_DEFINITIONS = [
         type: "object",
         properties: {
           spreadsheet_id: { type: "string", description: "Link Google Sheets atau spreadsheet_id" },
-          range: { type: "string", description: "Range sel (default: Sheet1!A:Z)" },
+          range: { type: "string", description: "Range sel (opsional, auto-detect dari spreadsheet)" },
           values: { type: "string", description: 'Data baru dalam format JSON array, contoh: [["Andi",30]]' }
         },
         required: ["spreadsheet_id", "values"]
