@@ -3,7 +3,7 @@
 // Cron Trigger (scheduled) to the rest of the modules.
 
 import { MAX_TOOL_ITERATIONS, MEMORY_MAX_ENTRIES } from "./config.js";
-import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote, sendChatAction, registerBotCommands } from "./telegram.js";
+import { sendTelegram, deleteTelegramMessage, transcribeVoiceNote, startTyping, registerBotCommands } from "./telegram.js";
 import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
@@ -292,10 +292,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       const MAX_LOOP_TIME_MS = 60000;
 
       // Periodic typing indicator — refresh every 4 seconds, auto-expires
-      const typingInterval = setInterval(() => {
-        sendChatAction(env.TELEGRAM_TOKEN, chatId);
-      }, 4000);
-      sendChatAction(env.TELEGRAM_TOKEN, chatId);
+      const stopTyping = startTyping(env.TELEGRAM_TOKEN, chatId);
 
       try {
       while (iterations < MAX_TOOL_ITERATIONS) {
@@ -372,7 +369,7 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
       }
       if (!finalContent) finalContent = "Terlalu banyak langkah tool. Coba jelaskan lebih singkat atau spesifik.";
       } finally {
-        clearInterval(typingInterval);
+        stopTyping();
       }
 
       await sendTelegram(env.TELEGRAM_TOKEN, chatId, String(finalContent).trim().slice(0, 4096));

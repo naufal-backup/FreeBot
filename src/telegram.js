@@ -68,6 +68,12 @@ export async function sendChatAction(botToken, chat_id) {
   }
 }
 
+export function startTyping(botToken, chat_id) {
+  sendChatAction(botToken, chat_id);
+  const interval = setInterval(() => sendChatAction(botToken, chat_id), 4000);
+  return () => clearInterval(interval);
+}
+
 export async function transcribeVoiceNote(env, voiceInfo, chatId) {
   try {
     if (voiceInfo.duration > 60) {
