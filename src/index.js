@@ -425,6 +425,14 @@ Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab d
         }
 
         finalContent = finalMsg.content || "Maaf, tidak ada respons.";
+
+        // If AI returned empty content but we have tool results, use last tool result
+        if (!finalMsg.content && messages.length > 1) {
+          const lastToolMsg = [...messages].reverse().find(m => m.role === "tool");
+          if (lastToolMsg?.content) {
+            finalContent = lastToolMsg.content;
+          }
+        }
         break;
       }
       if (!finalContent) finalContent = "Terlalu banyak langkah tool. Coba jelaskan lebih singkat atau spesifik.";
