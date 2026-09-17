@@ -229,7 +229,7 @@ async function getSheetName(accessToken, spreadsheetId) {
 }
 
 function resolveRange(range, sheetName) {
-  if (!range) return `${sheetName}!A1`;
+  if (!range) return `${sheetName}!A1:Z`;
   if (range.includes("!")) {
     const parts = range.split("!");
     return `${sheetName}!${parts[parts.length - 1]}`;
