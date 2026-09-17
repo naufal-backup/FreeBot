@@ -219,7 +219,25 @@ export async function createGoogleSheet(accessToken, title) {
 }
 
 export async function readGoogleSheet(accessToken, spreadsheetId, range) {
-  const r = range || "Sheet1!A1:Z1000";
+  // First, get the actual sheet name from metadata
+  let sheetName = "Sheet1";
+  try {
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const meta = await metaRes.json();
+    if (meta.sheets?.[0]?.properties?.title) {
+      sheetName = meta.sheets[0].properties.title;
+    }
+  } catch {}
+
+  // If range is not provided or contains default "Sheet1", use actual sheet name
+  let r = range;
+  if (!r || r.startsWith("Sheet1!")) {
+    r = r ? r.replace("Sheet1", sheetName) : `${sheetName}!A1:Z1000`;
+  }
+
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(r)}?valueRenderOption=FORMATTED_VALUE`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -227,12 +245,33 @@ export async function readGoogleSheet(accessToken, spreadsheetId, range) {
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || "Gagal baca spreadsheet");
   const rows = data.values || [];
-  return { title: data.range, rows, spreadsheetId };
+  return { title: data.range, rows, spreadsheetId, sheetName };
+}
+
+async function getSheetName(accessToken, spreadsheetId) {
+  try {
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const meta = await metaRes.json();
+    return meta.sheets?.[0]?.properties?.title || "Sheet1";
+  } catch {
+    return "Sheet1";
+  }
+}
+
+function resolveRange(range, sheetName) {
+  if (!range) return `${sheetName}!A1`;
+  if (range.startsWith("Sheet1!")) return range.replace("Sheet1", sheetName);
+  return range;
 }
 
 export async function writeGoogleSheet(accessToken, spreadsheetId, range, values) {
+  const sheetName = await getSheetName(accessToken, spreadsheetId);
+  const r = resolveRange(range, sheetName);
   const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(r)}?valueInputOption=USER_ENTERED`,
     {
       method: "PUT",
       headers: {
@@ -248,8 +287,10 @@ export async function writeGoogleSheet(accessToken, spreadsheetId, range, values
 }
 
 export async function appendGoogleSheet(accessToken, spreadsheetId, range, values) {
+  const sheetName = await getSheetName(accessToken, spreadsheetId);
+  const r = resolveRange(range, sheetName);
   const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(r)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
     {
       method: "POST",
       headers: {
