@@ -144,24 +144,33 @@ export async function buildModelChunks(env) {
   return chunks;
 }
 
+const modelPickMemory = new Map();
+
+function buildPickId(chatId) {
+  return "p:" + String(chatId).slice(0, 10);
+}
+
 export async function sendModelList(env, chatId, header) {
-  const providers = await getAllProviders(env);
+  const allModels = await getAllModels(env);
+  const pickId = buildPickId(chatId);
+  const items = allModels.map((m) => ({
+    realLabel: m.realLabel,
+    disp: m.disp
+  }));
+  modelPickMemory.set(pickId, items);
+
   const buttons = [];
   let rows = [];
-  for (const p of providers) {
-    const list = await fetchProviderModels(p.base_url, p.api_key);
-    if (!list || !list.length) continue;
-    for (const m of list) {
-      const label = m.disp.length > 30 ? m.disp.slice(0, 27) + "..." : m.disp;
-      rows.push({ text: label, callback_data: "model:" + m.id + ":" + p.id });
-      if (rows.length >= 2) {
-        buttons.push(rows);
-        rows = [];
-      }
+  for (let i = 0; i < items.length; i++) {
+    const label = items[i].disp.length > 30 ? items[i].disp.slice(0, 27) + "..." : items[i].disp;
+    rows.push({ text: label, callback_data: "m:" + i });
+    if (rows.length >= 2) {
+      buttons.push(rows);
+      rows = [];
     }
   }
   if (rows.length) buttons.push(rows);
-  buttons.push([{ text: " Batal", callback_data: "model:cancel" }]);
+  buttons.push([{ text: " Batal", callback_data: "m:c" }]);
 
   const chunks = await buildModelChunks(env);
   const listText = chunks.join("\n\n");
@@ -169,29 +178,30 @@ export async function sendModelList(env, chatId, header) {
 }
 
 export async function handleModelCallback(callbackData, env, chatId, fromId, callbackQueryId, messageId) {
-  const parts = callbackData.split(":");
-  if (parts.length < 2) return;
-  const action = parts[0];
-  if (action !== "model") return;
+  if (!callbackData.startsWith("m:")) return;
+  const payload = callbackData.slice(2);
 
-  if (parts[1] === "cancel") {
+  if (payload === "c") {
     await editMessageReplyMarkup(env.TELEGRAM_TOKEN, chatId, messageId, []);
     await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Dibatalkan");
     return;
   }
 
-  const modelId = parts[1];
-  const providerId = parts[2];
-  if (!modelId || !providerId) {
-    await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Data tidak valid");
+  const idx = parseInt(payload, 10);
+  const pickId = buildPickId(chatId);
+  const items = modelPickMemory.get(pickId);
+  if (!items || !items[idx]) {
+    await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Kedaluwarsa. Kirim /model lagi.");
     return;
   }
 
-  const saveName = modelId + ":" + providerId;
+  const chosen = items[idx];
+  const saveName = chosen.realLabel;
   await setActiveModel(env, chatId, saveName);
+  modelPickMemory.delete(pickId);
   await editMessageReplyMarkup(env.TELEGRAM_TOKEN, chatId, messageId, []);
-  await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Model: " + modelId);
-  await editMessageText(env.TELEGRAM_TOKEN, chatId, messageId, "Model aktif: " + modelId + "\nProvider: " + providerId);
+  await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Model: " + chosen.disp);
+  await editMessageText(env.TELEGRAM_TOKEN, chatId, messageId, "Model aktif: " + chosen.disp + "\nProvider: " + saveName.split(":")[1]);
 }
 
 /**
