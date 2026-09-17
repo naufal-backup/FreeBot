@@ -156,6 +156,7 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         const projName = (args.name || "").toLowerCase();
         if (!projName) return "Nama project tidak boleh kosong.";
         if (!env.DB) return "D1 tidak tersedia.";
+        console.log(`[SECURITY] purge_project called: name=${projName} by user=${fromId}`);
         const row = await env.DB.prepare("SELECT id FROM projects WHERE name = ? AND owner_id = ?").bind(projName, String(fromId)).first();
         if (!row) return `Project "${projName}" tidak ditemukan.`;
         await env.DB.batch([
@@ -170,6 +171,7 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         const message = args.message || "Update via telegram-ai-bot";
         const files = args.files;
         if (!repo || !Array.isArray(files) || files.length === 0) return "repo dan files (array) harus diisi.";
+        console.log(`[SECURITY] commit_files called: repo=${repo} files=${files.length} by user=${fromId}`);
         if (!env.DB) return "D1 tidak tersedia.";
         const pat = await getServiceToken(env, fromId, "github");
         if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
@@ -224,6 +226,7 @@ export async function executeTool(toolCall, env, chatId, fromId) {
       case "delete_repo": {
         const repo = args.repo;
         if (!repo || !repo.includes("/")) return "repo harus format owner/repo (contoh: naufal-backup/naufal).";
+        console.log(`[SECURITY] delete_repo called: repo=${repo} by user=${fromId}`);
         const pat = await getServiceToken(env, fromId, "github");
         if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
         const githubLogin = await validateGithubToken(pat);
@@ -332,6 +335,7 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         const filePath = args.path;
         const msg = args.message || `Delete ${filePath} via telegram-ai-bot`;
         if (!repo || !filePath) return "repo dan path harus diisi.";
+        console.log(`[SECURITY] delete_repo_file called: repo=${repo} path=${filePath} by user=${fromId}`);
         const pat = await getServiceToken(env, fromId, "github");
         if (!pat) return "GitHub belum tersambung.";
         try {
