@@ -115,6 +115,11 @@ export async function commitToRepo(pat, fullName, message, files, branch = "main
     }
   }
 
+  // Safety: refuse to commit without base_tree — would overwrite repo files
+  if (parentSha && !treeBase) {
+    throw new Error("Gagal mengambil tree SHA dari repo. Commit dibatalkan untuk keamanan.");
+  }
+
   const blobs = [];
   for (const f of files) {
     const r = await fetch(`${base}/git/blobs`, {
