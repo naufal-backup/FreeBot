@@ -7,7 +7,7 @@ import { sendTelegram, editMessageText, deleteTelegramMessage, transcribeVoiceNo
 import { extractDocumentText } from "./documents.js";
 import { runScheduledTasks } from "./scheduled.js";
 import { canonicalIdentityAnswer } from "./identity.js";
-import { getActiveModel, getActiveApi, resolveApiEndpoint } from "./models.js";
+import { getActiveModel, getActiveApi, resolveApiEndpoint, handleModelCallback } from "./models.js";
 import { getChatMemory, saveChatMemory, summarizeHistory, getCavemanMode } from "./storage.js";
 import { getAllToolDefinitions } from "./tools/definitions.js";
 import { executeTool, executePendingAction } from "./tools/executor.js";
@@ -68,12 +68,20 @@ export default {
     // Register bot commands on first request
     ctx.waitUntil(registerBotCommands(env.TELEGRAM_TOKEN));
 
-    const chatId = update?.message?.chat?.id;
+    const chatId = update?.message?.chat?.id || update?.callback_query?.message?.chat?.id;
     const voiceInfo = update?.message?.voice;
     const docInfo = update?.message?.document;
     let userText = (update?.message?.text || update?.message?.caption || "").trim();
-    const fromId = update?.message?.from?.id;
-    const messageId = update?.message?.message_id;
+    const fromId = update?.message?.from?.id || update?.callback_query?.from?.id;
+    const messageId = update?.message?.message_id || update?.callback_query?.message?.message_id;
+
+    // --- Handle callback queries (inline keyboard taps) --------------------
+    if (update?.callback_query) {
+      const cq = update.callback_query;
+      const data = cq.data || "";
+      await handleModelCallback(data, env, chatId, fromId, cq.id, messageId);
+      return new Response("OK", { status: 200 });
+    }
 
     if (!chatId || !fromId) {
       return new Response("OK", { status: 200 });

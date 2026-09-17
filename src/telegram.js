@@ -220,3 +220,42 @@ export async function registerBotCommands(botToken) {
     console.error("[BOT] Failed to register commands:", err.message);
   }
 }
+
+export async function sendTelegramInlineKeyboard(botToken, chat_id, text, buttons) {
+  const html = markdownToHtml(text);
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id,
+      text: html,
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: buttons
+      }
+    })
+  });
+  return await res.json();
+}
+
+export async function answerCallbackQuery(botToken, callback_query_id, text) {
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id, text, show_alert: false })
+  });
+  return await res.json();
+}
+
+export async function editMessageReplyMarkup(botToken, chat_id, message_id, buttons) {
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/editMessageReplyMarkup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id,
+      message_id,
+      reply_markup: buttons ? { inline_keyboard: buttons } : { inline_keyboard: [] }
+    })
+  });
+  return await res.json();
+}

@@ -3,7 +3,7 @@
 // NO hardcoded models — everything from D1 provider_configs.
 
 import { maskApiKey } from "./utils/format.js";
-import { sendTelegram } from "./telegram.js";
+import { sendTelegram, sendTelegramInlineKeyboard, editMessageText, editMessageReplyMarkup, answerCallbackQuery } from "./telegram.js";
 
 export async function getActiveModel(env, chatId) {
   if (!env.DB) return null;
@@ -145,11 +145,53 @@ export async function buildModelChunks(env) {
 }
 
 export async function sendModelList(env, chatId, header) {
-  const chunks = await buildModelChunks(env);
-  await sendTelegram(env.TELEGRAM_TOKEN, chatId, header + "\n\n" + chunks[0]);
-  for (let i = 1; i < chunks.length; i++) {
-    await sendTelegram(env.TELEGRAM_TOKEN, chatId, "(" + (i + 1) + "/" + chunks.length + ")\n" + chunks[i]);
+  const providers = await getAllProviders(env);
+  const buttons = [];
+  let rows = [];
+  for (const p of providers) {
+    const list = await fetchProviderModels(p.base_url, p.api_key);
+    if (!list || !list.length) continue;
+    for (const m of list) {
+      const label = m.disp.length > 30 ? m.disp.slice(0, 27) + "..." : m.disp;
+      rows.push({ text: label, callback_data: "model:" + m.id + ":" + p.id });
+      if (rows.length >= 2) {
+        buttons.push(rows);
+        rows = [];
+      }
+    }
   }
+  if (rows.length) buttons.push(rows);
+  buttons.push([{ text: " Batal", callback_data: "model:cancel" }]);
+
+  const chunks = await buildModelChunks(env);
+  const listText = chunks.join("\n\n");
+  await sendTelegramInlineKeyboard(env.TELEGRAM_TOKEN, chatId, header + "\n\n" + listText, buttons);
+}
+
+export async function handleModelCallback(callbackData, env, chatId, fromId, callbackQueryId, messageId) {
+  const parts = callbackData.split(":");
+  if (parts.length < 2) return;
+  const action = parts[0];
+  if (action !== "model") return;
+
+  if (parts[1] === "cancel") {
+    await editMessageReplyMarkup(env.TELEGRAM_TOKEN, chatId, messageId, []);
+    await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Dibatalkan");
+    return;
+  }
+
+  const modelId = parts[1];
+  const providerId = parts[2];
+  if (!modelId || !providerId) {
+    await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Data tidak valid");
+    return;
+  }
+
+  const saveName = modelId + ":" + providerId;
+  await setActiveModel(env, chatId, saveName);
+  await editMessageReplyMarkup(env.TELEGRAM_TOKEN, chatId, messageId, []);
+  await answerCallbackQuery(env.TELEGRAM_TOKEN, callbackQueryId, "Model: " + modelId);
+  await editMessageText(env.TELEGRAM_TOKEN, chatId, messageId, "Model aktif: " + modelId + "\nProvider: " + providerId);
 }
 
 /**
