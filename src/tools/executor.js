@@ -25,23 +25,34 @@ import { renderTemplate } from "../templates.js";
 export async function toolWebsearch(query) {
   if (!query) return "Query tidak boleh kosong.";
   try {
-    const res = await fetch(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
-      { headers: { "User-Agent": "telegram-ai-bot/1.0" } }
-    );
-    if (!res.ok) return "Gagal mengakses DuckDuckGo.";
-    const data = await res.json();
-    const parts = [];
-    if (data.Abstract) parts.push(data.Abstract);
-    if (data.Answer) parts.push(`Jawaban: ${data.Answer}`);
-    if (data.Heading) parts.push(`Topik: ${data.Heading}`);
-    const related = (data.RelatedTopics || []).filter((t) => t.Text).slice(0, 5);
-    if (related.length) parts.push("Topik terkait:\n" + related.map((t) => `- ${t.Text}`).join("\n"));
-    if (data.Infobox?.content) {
-      const info = data.Infobox.content.slice(0, 5).map((c) => `- ${c.label}: ${c.value}`).join("\n");
-      if (info) parts.push(info);
+    const res = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
+    });
+    if (!res.ok) return "Gagal mengakses Bing.";
+    const html = await res.text();
+    const results = [];
+    // Extract search results from <li class="b_algo">
+    const liRegex = /<li class="b_algo"[^>]*>([\s\S]*?)<\/li>/gi;
+    let match;
+    while ((match = liRegex.exec(html)) && results.length < 5) {
+      const block = match[1];
+      // Extract title from <a> tag
+      const titleMatch = block.match(/<a[^>]*>([\s\S]*?)<\/a>/i);
+      // Extract URL from href
+      const urlMatch = block.match(/href="(https?:\/\/[^"]+)"/i);
+      // Extract snippet - text after the <a> tag
+      const snippetMatch = block.match(/<\/a>([\s\S]*?)$/i);
+      if (titleMatch && urlMatch) {
+        const title = titleMatch[1].replace(/<[^>]*>/g, "").trim();
+        const url = urlMatch[1].replace(/&amp;/g, "&");
+        const snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim().slice(0, 200) : "";
+        if (title && url) {
+          results.push({ title, url, snippet });
+        }
+      }
     }
-    return parts.length ? parts.join("\n\n") : `Tidak ada hasil untuk "${query}". Coba kata kunci lain.`;
+    if (results.length === 0) return `Tidak ada hasil untuk "${query}". Coba kata kunci lain.`;
+    return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join("\n\n");
   } catch {
     return "Error saat mencari di web.";
   }
