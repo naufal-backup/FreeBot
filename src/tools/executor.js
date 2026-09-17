@@ -21,6 +21,7 @@ import { getServiceToken, getStorageUsage } from "../storage.js";
 import { saveCustomTool, getCustomTools, deleteCustomTool, executeCustomTool } from "../skills.js";
 import { getAllModels, resolveModelLabel, setActiveModel } from "../models.js";
 import { renderTemplate } from "../templates.js";
+import { getGoogleAccessToken, createGoogleDoc, readGoogleDoc, appendGoogleDoc, shareGoogleDoc } from "../google.js";
 
 export async function toolWebsearch(query) {
   if (!query) return "Query tidak boleh kosong.";
@@ -411,6 +412,61 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, html);
         if (!result.ok) return `\u274C Gagal mengirim dokumen: ${result.error}`;
         return `\u2705 Dokumen **${title}** berhasil dikirim. Buka file lalu klik tombol "Download PDF" untuk menyimpan.`;
+      }
+
+      case "google_create_doc": {
+        const docTitle = args.title || "Dokumen Baru";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi. Set secret GOOGLE_SERVICE_ACCOUNT.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const doc = await createGoogleDoc(token, docTitle);
+          return `\u2705 Dokumen berhasil dibuat!\n\n**${doc.title}**\n${doc.url}`;
+        } catch (e) {
+          return `\u274C Gagal buat dokumen: ${e.message}`;
+        }
+      }
+
+      case "google_read_doc": {
+        const docId = args.document_id;
+        if (!docId) return "document_id harus diisi.";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          const doc = await readGoogleDoc(token, docId);
+          return `**${doc.title}**\n\n${doc.content.slice(0, 8000)}`;
+        } catch (e) {
+          return `\u274C Gagal baca dokumen: ${e.message}`;
+        }
+      }
+
+      case "google_append_doc": {
+        const docId = args.document_id;
+        const text = args.text;
+        if (!docId || !text) return "document_id dan text harus diisi.";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          await appendGoogleDoc(token, docId, text);
+          const url = `https://docs.google.com/document/d/${docId}/edit`;
+          return `\u2705 Teks berhasil ditambahkan ke dokumen.\n${url}`;
+        } catch (e) {
+          return `\u274C Gagal append: ${e.message}`;
+        }
+      }
+
+      case "google_share_doc": {
+        const docId = args.document_id;
+        const email = args.email;
+        const role = args.role || "reader";
+        if (!docId || !email) return "document_id dan email harus diisi.";
+        if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
+        try {
+          const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
+          await shareGoogleDoc(token, docId, email, role);
+          return `\u2705 Dokumen berhasil di-share ke ${email} (${role})`;
+        } catch (e) {
+          return `\u274C Gagal share: ${e.message}`;
+        }
       }
 
       case "cron_list": {

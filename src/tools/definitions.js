@@ -265,6 +265,65 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "google_create_doc",
+      description: 'Buat dokumen Google Docs baru. Panggil saat user minta "buat dokumen Google", "create Google doc", "bikin doc di Google Docs".',
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Judul dokumen" }
+        },
+        required: ["title"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "google_read_doc",
+      description: 'Baca isi dokumen Google Docs. Panggil saat user minta "baca dokumen Google", "read Google doc", "ambil isi doc".',
+      parameters: {
+        type: "object",
+        properties: {
+          document_id: { type: "string", description: "Document ID dari Google Docs (bisa dari URL)" }
+        },
+        required: ["document_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "google_append_doc",
+      description: 'Tambahkan teks ke dokumen Google Docs. Panggil saat user minta "tambah isi doc", "append ke dokumen".',
+      parameters: {
+        type: "object",
+        properties: {
+          document_id: { type: "string", description: "Document ID" },
+          text: { type: "string", description: "Teks yang akan ditambahkan" }
+        },
+        required: ["document_id", "text"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "google_share_doc",
+      description: 'Share dokumen Google Docs ke email lain. Panggil saat user minta "share dokumen", "bagikan doc".',
+      parameters: {
+        type: "object",
+        properties: {
+          document_id: { type: "string", description: "Document ID" },
+          email: { type: "string", description: "Email tujuan" },
+          role: { type: "string", description: "Permission: reader, writer, comment (default: reader)" }
+        },
+        required: ["document_id", "email"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "cron_list",
       description: "Tampilkan semua tugas cron yang sudah dijadwalkan untuk user ini.",
       parameters: { type: "object", properties: {} }
