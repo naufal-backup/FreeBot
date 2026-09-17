@@ -164,6 +164,32 @@ export async function commitToRepo(pat, fullName, message, files, branch = "main
   }
 }
 
+export async function pullRepo(pat, fullName, branch = "main") {
+  const headers = {
+    Authorization: `Bearer ${pat}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "telegram-ai-bot"
+  };
+  const base = `https://api.github.com/repos/${fullName}`;
+
+  const refRes = await fetch(`${base}/git/refs/heads/${branch}`, { headers });
+  if (!refRes.ok) {
+    const err = await refRes.json().catch(() => ({}));
+    throw new Error(err?.message || "Gagal membaca branch dari remote");
+  }
+  const refData = await refRes.json();
+  const remoteSha = refData?.object?.sha;
+  if (!remoteSha) throw new Error("Remote branch tidak memiliki commit");
+
+  const commitRes = await fetch(`${base}/git/commits/${remoteSha}`, { headers });
+  if (!commitRes.ok) throw new Error("Gagal membaca commit terakhir dari remote");
+  const commitData = await commitRes.json();
+  const treeSha = commitData?.tree?.sha;
+  if (!treeSha) throw new Error("Gagal membaca tree dari remote");
+
+  return { sha: remoteSha, treeSha, message: commitData?.message || "" };
+}
+
 export async function listRepoContents(pat, repo, folderPath) {
   if (!folderPath) folderPath = "";
   const url = folderPath

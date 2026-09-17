@@ -13,6 +13,7 @@ import {
   createGithubRepo,
   pushFilesToGithub,
   commitToRepo,
+  pullRepo,
   listRepoContents,
   readRepoFile
 } from "../github.js";
@@ -177,8 +178,18 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
         const githubLogin = await validateGithubToken(pat);
         if (!githubLogin) return "Token GitHub tidak valid.";
+
+        let remoteState;
+        try {
+          remoteState = await pullRepo(pat, repo, "main");
+        } catch (e) {
+          return `Pull gagal: ${e.message}. Commit dibatalkan.`;
+        }
+
         await commitToRepo(pat, repo, message, files, "main");
+
         const proj = await env.DB.prepare("SELECT id FROM projects WHERE owner_id = ? AND github_repo = ?").bind(String(fromId), repo).first();
+        let storageInfo = "";
         if (proj) {
           for (const f of files) {
             const sz = new TextEncoder().encode(f.content || "").length;
@@ -192,8 +203,10 @@ export async function executeTool(toolCall, env, chatId, fromId) {
           await env.DB.prepare(
             "UPDATE projects SET total_bytes = (SELECT COALESCE(SUM(size),0) FROM project_files WHERE project_id=?), last_accessed_at = ? WHERE id = ?"
           ).bind(proj.id, Date.now(), proj.id).run();
+          const usage = await getStorageUsage(env, String(fromId));
+          storageInfo = `\n\nStorage: ${fmtBytes(usage.used)} / ${fmtBytes(usage.limit)}. Ingin bersihkan storage? Gunakan /cleanup.`;
         }
-        return `Commit berhasil ke ${repo} (${files.length} file). Pesan: "${message}"`;
+        return `Commit berhasil ke ${repo} (${files.length} file). Pesan: "${message}"${storageInfo}`;
       }
 
       case "list_repo_files": {
