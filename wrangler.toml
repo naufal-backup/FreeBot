@@ -1,0 +1,22 @@
+name = "telegram-ai-bot"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+STORAGE_QUOTA_BYTES = "419430400"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "telegram-projects"
+database_id = "197c8d5f-d128-412f-8191-de805dc0bf6a"
+
+[[services]]
+binding = "AUDIO_TRANSCRIBE"
+service = "audio-transcribe"
+
+[ai]
+binding = "AI"
