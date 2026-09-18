@@ -60,6 +60,95 @@ export async function toolWebsearch(query) {
   }
 }
 
+// Convert a 1-based column index to a spreadsheet letter (1->A, 27->AA).
+function colLetter(n) {
+  let s = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+// Normalize tool `values` into a 2D array (array of row arrays).
+function normalizeValues(parsed) {
+  if (!Array.isArray(parsed)) return [[String(parsed)]];
+  if (parsed.length === 0) return [];
+  if (!Array.isArray(parsed[0])) return [parsed]; // single row given flat
+  return parsed;
+}
+
+// Highest 1-based row index that contains any non-empty cell.
+function lastFilledRow(rows) {
+  let last = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (Array.isArray(r) && r.some((c) => c !== "" && c != null)) last = i + 1;
+  }
+  return last;
+}
+
+// First integer in an A1-style range = start row ("A27:E46" -> 27, "A:Z" -> 1).
+function parseStartRow(range) {
+  const r = String(range || "");
+  const cellPart = r.includes("!") ? r.split("!").pop() : r; // drop sheet prefix
+  const m = cellPart.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : 1;
+}
+
+// Build the empty-row check + confirmation text for a write/append.
+// Returns { confirm, range } where `range` is stored in the pending action.
+async function buildSheetWriteConfirm(token, sheetId, values, reqRange, mode) {
+  // Read the whole used area (cols A:Z) to locate filled rows.
+  const full = await readGoogleSheet(token, sheetId, "A:Z");
+  const filled = lastFilledRow(full.rows || []);
+  const sheetName = full.sheetName || "Sheet1";
+
+  const width = values.reduce((mx, r) => Math.max(mx, r.length), 1);
+  const lastCol = colLetter(width);
+  const n = values.length;
+
+  let startRow;
+  let targetRange;
+  let overlapWarning = "";
+  const cellPartReq = reqRange && reqRange.includes("!") ? reqRange.split("!").pop() : reqRange;
+  const explicit = cellPartReq && /\d/.test(cellPartReq); // "A27:E46" yes, "A:Z" no
+  if (explicit) {
+    startRow = parseStartRow(reqRange);
+    targetRange = reqRange.includes("!") ? reqRange.split("!").pop() : reqRange;
+    const endRow = startRow + n - 1;
+    if (startRow <= filled) {
+      overlapWarning = `\n⚠️ Baris ${startRow}-${Math.min(endRow, filled)} sudah terisi — data lama akan TIMPA.`;
+    }
+  } else {
+    // Auto-place after the last filled row.
+    startRow = filled + 1;
+    targetRange = `A${startRow}:${lastCol}${startRow + n - 1}`;
+  }
+
+  // Preview: first 3 rows with their target row numbers.
+  let preview = "";
+  for (let i = 0; i < Math.min(3, n); i++) {
+    const cells = values[i].map((c) => String(c));
+    let line = cells.join(" | ");
+    if (line.length > 60) line = line.slice(0, 57) + "...";
+    preview += `${startRow + i}: ${line}\n`;
+  }
+  if (n > 3) preview += `... +${n - 3} baris lagi\n`;
+
+  const verb = mode === "append" ? "APPEND" : "TULIS";
+  let confirm = `⚠️ Konfirmasi ${verb} ke spreadsheet:\n`;
+  confirm += `📄 Sheet: ${sheetName}\n`;
+  confirm += `📊 Baris terisi: ${filled}\n`;
+  confirm += `📍 Target: ${targetRange} (${n} baris)\n`;
+  if (overlapWarning) confirm += overlapWarning;
+  confirm += `\n${preview}\n`;
+  confirm += `Cek ulang — ketik "ya" untuk lanjut atau "batal" untuk batalkan.`;
+
+  return { confirm, sheetName, targetRange };
+}
+
 export async function executeTool(toolCall, env, chatId, fromId) {
   const name = toolCall.function?.name;
   let args;
@@ -519,22 +608,16 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
           const parsed = typeof values === "string" ? JSON.parse(values) : values;
+          const norm = normalizeValues(parsed);
+          if (!norm.length) return "values kosong — tidak ada yang ditulis.";
           const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
-          const meta = await readGoogleSheet(token, sheetId, args.range);
-          const sheetName = meta.sheetName || "Sheet1";
-          const range = args.range || `${sheetName}!A1`;
-          const rowCount = Array.isArray(parsed) ? (Array.isArray(parsed[0]) ? parsed.length : 1) : 1;
+          const { confirm, sheetName, targetRange } = await buildSheetWriteConfirm(token, sheetId, norm, args.range, "write");
 
           setPendingAction(chatId, {
             type: "google_write_sheet",
-            args: { spreadsheet_id: sheetId, range, values: parsed }
+            args: { spreadsheet_id: sheetId, range: `${sheetName}!${targetRange}`, values: norm }
           });
 
-          let confirm = `⚠️ Konfirmasi TULIS ke spreadsheet:\n`;
-          confirm += `📄 ${meta.title || sheetId}\n`;
-          confirm += `📍 Range: ${range}\n`;
-          confirm += `📊 Data: ${rowCount} baris\n`;
-          confirm += `\nKetik "ya" untuk lanjut atau "batal" untuk batalkan.`;
           return confirm;
         } catch (e) {
           return `\u274C Gagal siapkan tulis: ${e.message}`;
@@ -548,22 +631,16 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         if (!env.GOOGLE_SERVICE_ACCOUNT) return "Google Service Account belum dikonfigurasi.";
         try {
           const parsed = typeof values === "string" ? JSON.parse(values) : values;
+          const norm = normalizeValues(parsed);
+          if (!norm.length) return "values kosong — tidak ada yang ditambahkan.";
           const token = await getGoogleAccessToken(env.GOOGLE_SERVICE_ACCOUNT);
-          const meta = await readGoogleSheet(token, sheetId, args.range);
-          const sheetName = meta.sheetName || "Sheet1";
-          const range = args.range || `${sheetName}!A:Z`;
-          const rowCount = Array.isArray(parsed) ? (Array.isArray(parsed[0]) ? parsed.length : 1) : 1;
+          const { confirm, sheetName, targetRange } = await buildSheetWriteConfirm(token, sheetId, norm, args.range, "append");
 
           setPendingAction(chatId, {
             type: "google_append_sheet",
-            args: { spreadsheet_id: sheetId, range, values: parsed }
+            args: { spreadsheet_id: sheetId, range: `${sheetName}!${targetRange}`, values: norm }
           });
 
-          let confirm = `⚠️ Konfirmasi APPEND ke spreadsheet:\n`;
-          confirm += `📄 ${meta.title || sheetId}\n`;
-          confirm += `📍 Range: ${range}\n`;
-          confirm += `📊 Data: ${rowCount} baris baru\n`;
-          confirm += `\nKetik "ya" untuk lanjut atau "batal" untuk batalkan.`;
           return confirm;
         } catch (e) {
           return `\u274C Gagal siapkan append: ${e.message}`;
