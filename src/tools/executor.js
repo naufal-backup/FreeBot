@@ -6,6 +6,7 @@ import { fmtBytes } from "../utils/format.js";
 import { parseNaturalTime } from "../utils/time.js";
 import { markdownToHtml } from "../utils/markdown.js";
 import { generatePdfHtml } from "../utils/pdfTemplate.js";
+import { generatePosterHtml } from "../utils/posterTemplate.js";
 import { sendTelegramDocument } from "../telegram.js";
 import { extractDocumentText } from "../documents.js";
 import { setPendingAction } from "../pendingActions.js";
@@ -502,6 +503,30 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, html);
         if (!result.ok) return `\u274C Gagal mengirim dokumen: ${result.error}`;
         return `\u2705 Dokumen **${title}** berhasil dikirim. Buka file lalu klik tombol "Download PDF" untuk menyimpan.`;
+      }
+
+      case "generate_poster": {
+        const title = args.title || "Poster";
+        const keyword = args.imageKeyword || title;
+        const layout = args.layout === "flyer" ? "flyer" : "poster";
+        let details = args.details;
+        if (typeof details === "string") {
+          try { details = JSON.parse(details); } catch { details = details.split(/\n|;/).map((s) => s.trim()).filter(Boolean); }
+        }
+        if (!Array.isArray(details)) details = details ? [String(details)] : [];
+        const fileName = (layout + "-" + (title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "poster")) + ".html";
+        const html = await generatePosterHtml({
+          layout,
+          title,
+          subtitle: args.subtitle,
+          details: details.slice(0, 6),
+          cta: args.cta,
+          accent: args.accent,
+          imageKeyword: keyword
+        });
+        const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, html);
+        if (!result.ok) return `\u274C Gagal mengirim poster: ${result.error}`;
+        return `\u2705 ${layout === "flyer" ? "Flyer" : "Poster"} **${title}** terkirim (gambar: "${keyword}"). Buka file di browser — tombol "Save PDF / Gambar" untuk simpan/cetak. Ganti gambar? Bilang saja keyword lain.`;
       }
 
       case "google_create_doc": {

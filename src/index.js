@@ -331,6 +331,7 @@ PENTING TOOL: Jika sudah punya jawaban dari tool sebelumnya, JANGAN panggil tool
 - delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi: "File X akan dihapus dari repo. Yakin?"
 - generate_file(name, content): buat file teks (md/txt/js/py/html/css/json) dan kirim ke user.
 - generate_pdf(title, content, filename): buat dokumen HTML dengan tombol download PDF. Panggil saat user minta essay, artikel, laporan, dokumen PDF.
+- generate_poster(layout, title, subtitle, details, cta, accent, imageKeyword): buat POSTER/FLYER HTML bergambar. layout: "poster" (portrait) atau "flyer" (landscape). details: array string (alamat, jam, telp, promo). imageKeyword WAJIB bahasa Inggris (mis. barbershop, warkop coffee, motorcycle repair, laundry) untuk cari foto Unsplash via imgix. Panggil saat user minta buat poster, flyer, promosi, iklan bergambar.
 - google_create_doc(title): buat dokumen Google Docs baru. Return link.
 - google_read_doc(document_id): baca isi Google Docs. Kirim link atau document_id.
 - google_append_doc(document_id, text): tambah teks ke Google Docs.
@@ -357,6 +358,8 @@ User: "Baca https://docs.google.com/spreadsheets/d/XYZ456/edit"
 Kamu: [PANGGIL google_read_sheet(spreadsheet_id="https://docs.google.com/spreadsheets/d/XYZ456/edit")]
 
 KETIKA USER MINTA PDF/ESSAY/ARTIKEL/LAPORAN: Gunakan generate_pdf. Isi content dalam format markdown, nanti otomatis dikonversi ke HTML yang rapi dengan tombol download.
+
+KETIKA USER MINTA POSTER/FLYER/PROMOSI/IKLAN BERGAMBAR: Gunakan generate_poster dengan metode yang sama (HTML siap cetak). Tentukan layout (poster=portrait, flyer=landscape), judul besar, subtitle, details (alamat/jam/telepon/promo), cta, dan imageKeyword bahasa Inggris yang cocok dengan tema usaha. JANGAN bilang tidak bisa membuat gambar — tool ini menghasilkan file HTML poster bergambar.
 
 Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab dengan teks biasa jika tool tersedia.`;
 

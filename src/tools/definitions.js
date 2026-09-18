@@ -265,6 +265,26 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "generate_poster",
+      description: 'Buat poster/flyer promosi bergambar sebagai file HTML (buka di browser, ada tombol Save PDF/Gambar). Panggil saat user minta "buat poster", "buat flyer", "bikin promosi", "poster event", "flyer diskon". Gambar latar otomatis diambil dari Unsplash via imgix berdasarkan imageKeyword.',
+      parameters: {
+        type: "object",
+        properties: {
+          layout: { type: "string", enum: ["poster", "flyer"], description: "poster = portrait A4, flyer = landscape A4" },
+          title: { type: "string", description: "Judul besar poster, contoh: DISKON 50%" },
+          subtitle: { type: "string", description: "Tagline singkat di bawah judul" },
+          details: { type: "array", items: { type: "string" }, description: "Baris detail: alamat, jam buka, telepon, promo, website (maks 6)" },
+          cta: { type: "string", description: "Tombol ajakan, contoh: PESAN SEKARANG, BOOK NOW" },
+          accent: { type: "string", description: "Warna utama hex, contoh: #ff5a5f (default merah)" },
+          imageKeyword: { type: "string", description: "Kata kunci gambar dalam BAHASA INGGRIS, contoh: barbershop, warkop coffee, motorcycle repair, laundry" }
+        },
+        required: ["title", "imageKeyword"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "google_create_doc",
       description: 'Buat dokumen Google Docs baru. Panggil saat user minta "buat dokumen Google", "create Google doc", "bikin doc di Google Docs".',
       parameters: {
