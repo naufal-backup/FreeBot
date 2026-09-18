@@ -5,9 +5,11 @@ import { sendTelegram } from "../telegram.js";
 import { getActiveModel, setActiveModel, sendModelList, findProviderForModel } from "../models.js";
 import { getCavemanMode, setCavemanMode } from "../storage.js";
 import { getCustomTools, deleteCustomTool } from "../skills.js";
+import { listImages, deleteImage, deleteAllImages } from "../imageStore.js";
+import { fmtBytes } from "../utils/format.js";
 
 const HELP_TEXT =
-  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model\n/models - daftar model dari provider\n/reset - hapus memori chat\n/myid - lihat ID\n/caveman - toggle hemat token\n/skills - lihat skill custom\n/delskill <nama> - hapus skill\n/addprovider <id> <url> <key> [models] - tambah provider\n/providers - lihat provider\n/delprovider <id> - hapus provider\n/google-setup - panduan setup Google Cloud\n/google-status - cek status Google integration\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, gambar (OCR).\nKirim link Google Sheets/Docs → bot auto-baca.\nKetik teks bebas untuk chat AI.";
+  "Perintah:\n/start - mulai\n/help - bantuan ini\n/model - lihat/ganti model\n/models - daftar model dari provider\n/reset - hapus memori chat\n/myid - lihat ID\n/caveman - toggle hemat token\n/skills - lihat skill custom\n/delskill <nama> - hapus skill\n/images - lihat gambar tersimpan\n/delimage <id> - hapus satu gambar\n/clearimages - hapus semua gambar\n/addprovider <id> <url> <key> [models] - tambah provider\n/providers - lihat provider\n/delprovider <id> - hapus provider\n/google-setup - panduan setup Google Cloud\n/google-status - cek status Google integration\n\nKirim dokumen: PDF, DOCX, HTML, TXT, MD, gambar (OCR).\nKirim gambar → bisa jadi poster/flyer/PDF atau disimpan ke repo GitHub.\nKirim link Google Sheets/Docs → bot auto-baca.\nKetik teks bebas untuk chat AI.";
 
 export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, messageId) {
   if (cmdWord === "/start") {
@@ -87,6 +89,39 @@ export async function handleBasicCommands(cmdWord, cmdArg, env, chatId, fromId, 
     }
     const deleted = await deleteCustomTool(env, chatId, toolName);
     await sendTelegram(env.TELEGRAM_TOKEN, chatId, deleted ? `"${toolName}" dihapus.` : `"${toolName}" tidak ditemukan.`);
+    return true;
+  }
+
+  if (cmdWord === "/images") {
+    const imgs = await listImages(env, chatId);
+    if (!imgs.length) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Belum ada gambar tersimpan.\nKirim gambar ke chat — tersimpan sementara 30 menit.");
+      return true;
+    }
+    const lines = imgs.map((im) => `- id=${im.id} | ${im.fileName} | ${fmtBytes(im.sizeBytes)}`);
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Gambar tersimpan (${imgs.length}):\n${lines.join("\n")}\n\nHapus satu: /delimage <id>\nHapus semua: /clearimages`);
+    return true;
+  }
+
+  if (cmdWord === "/delimage") {
+    const imageId = cmdArg.trim();
+    if (!imageId) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, "Format: /delimage <id>\nLihat id dengan /images.");
+      return true;
+    }
+    const imgs = await listImages(env, chatId);
+    if (!imgs.some((im) => im.id === imageId)) {
+      await sendTelegram(env.TELEGRAM_TOKEN, chatId, `Gambar id=${imageId} tidak ditemukan (mungkin sudah dihapus/kedaluwarsa).`);
+      return true;
+    }
+    await deleteImage(env, imageId, chatId);
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, `\u2705 Gambar id=${imageId} dihapus.`);
+    return true;
+  }
+
+  if (cmdWord === "/clearimages") {
+    const n = await deleteAllImages(env, chatId);
+    await sendTelegram(env.TELEGRAM_TOKEN, chatId, n ? `\u2705 ${n} gambar dihapus dari penyimpanan sementara.` : "Tidak ada gambar tersimpan.");
     return true;
   }
 

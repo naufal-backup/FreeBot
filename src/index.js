@@ -13,6 +13,7 @@ import { getAllToolDefinitions } from "./tools/definitions.js";
 import { executeTool, executePendingAction } from "./tools/executor.js";
 import { getGoogleAccessToken, extractDocIdFromUrl, extractSheetIdFromUrl, readGoogleDoc, readGoogleSheet } from "./google.js";
 import { getPendingAction, clearPendingAction } from "./pendingActions.js";
+import { saveTelegramImage } from "./imageStore.js";
 
 import { handleBasicCommands } from "./commands/basic.js";
 import { handleAuthCommands } from "./commands/auth.js";
@@ -71,6 +72,10 @@ export default {
     const chatId = update?.message?.chat?.id || update?.callback_query?.message?.chat?.id;
     const voiceInfo = update?.message?.voice;
     const docInfo = update?.message?.document;
+    // Telegram sends photos as an array of sizes; take the largest.
+    const photoInfo = Array.isArray(update?.message?.photo) && update.message.photo.length
+      ? update.message.photo[update.message.photo.length - 1]
+      : null;
     let userText = (update?.message?.text || update?.message?.caption || "").trim();
     const fromId = update?.message?.from?.id || update?.callback_query?.from?.id;
     const messageId = update?.message?.message_id || update?.callback_query?.message?.message_id;
@@ -159,6 +164,23 @@ export default {
         } catch (err) {
           console.error("doc extract error:", err.message);
           userText = userText || "Gagal membaca dokumen: " + err.message;
+        }
+      }
+    }
+
+    // --- Photo ingestion: store in D1 so tools can reuse it -----------------
+    // Guarded by the allow-list here (the main gate is further down) so
+    // unauthorized users cannot fill D1 by spamming photos.
+    if (photoInfo) {
+      const allowedUsers = (env.ALLOWED_USER_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (allowedUsers.includes(String(fromId))) {
+        try {
+          const saved = await saveTelegramImage(env, chatId, photoInfo.file_id, "photo.jpg");
+          const note = `[Gambar tersimpan sementara di D1: id=${saved.id}, file=${saved.fileName}, ukuran=${saved.sizeBytes} byte. Gunakan image_id="${saved.id}" pada generate_poster/generate_pdf atau commit_image_to_repo bila user memintanya. Gambar otomatis dihapus setelah dipakai atau kedaluwarsa 30 menit.]`;
+          userText = userText ? note + "\n\nInstruksi user: " + userText : note + "\n\nTanyakan apa yang ingin user lakukan dengan gambar ini (poster, flyer, dokumen, atau simpan ke repo GitHub).";
+        } catch (err) {
+          console.error("photo ingest error:", err.message);
+          userText = userText || "Gagal menyimpan gambar: " + err.message;
         }
       }
     }
@@ -330,8 +352,11 @@ PENTING TOOL: Jika sudah punya jawaban dari tool sebelumnya, JANGAN panggil tool
 - create_repo_branch(repo, branch): buat branch baru dari main/sumber lain.
 - delete_repo_file(repo, path): hapus file dari repo via commit. Konfirmasi: "File X akan dihapus dari repo. Yakin?"
 - generate_file(name, content): buat file teks (md/txt/js/py/html/css/json) dan kirim ke user.
-- generate_pdf(title, content, filename): buat dokumen HTML dengan tombol download PDF. Panggil saat user minta essay, artikel, laporan, dokumen PDF.
-- generate_poster(layout, title, subtitle, details, cta, accent, imageKeyword): buat POSTER/FLYER HTML bergambar. layout: "poster" (portrait) atau "flyer" (landscape). details: array string (alamat, jam, telp, promo). imageKeyword WAJIB bahasa Inggris (mis. barbershop, warkop coffee, motorcycle repair, laundry) untuk cari foto Unsplash via imgix. Panggil saat user minta buat poster, flyer, promosi, iklan bergambar.
+- generate_pdf(title, content, filename, image_id): buat dokumen HTML dengan tombol download PDF. Panggil saat user minta essay, artikel, laporan, dokumen PDF. image_id (opsional): sisipkan gambar yang user kirim di awal dokumen.
+- generate_poster(layout, title, subtitle, details, cta, accent, image_id, imageKeyword): buat POSTER/FLYER HTML bergambar. layout: "poster" (portrait) atau "flyer" (landscape). details: array string (alamat, jam, telp, promo). JIKA user mengirim gambar sendiri, isi image_id dari pesan "[Gambar tersimpan ... id=X]" sebagai gambar latar. JIKA tidak, isi imageKeyword bahasa Inggris (mis. barbershop, warkop coffee, motorcycle repair, laundry) untuk cari foto Unsplash via imgix. Panggil saat user minta buat poster, flyer, promosi, iklan bergambar.
+- list_images(): lihat gambar tersimpan sementara di D1 (id, nama, ukuran).
+- delete_image(image_id): hapus satu gambar tersimpan dari D1.
+- commit_image_to_repo(repo, image_id, path, message): commit gambar yang user kirim ke repo GitHub (binary/base64). HANYA jika user konfirmasi eksplisit. Gambar otomatis dihapus dari D1 setelah berhasil.
 - google_create_doc(title): buat dokumen Google Docs baru. Return link.
 - google_read_doc(document_id): baca isi Google Docs. Kirim link atau document_id.
 - google_append_doc(document_id, text): tambah teks ke Google Docs.
@@ -360,6 +385,15 @@ Kamu: [PANGGIL google_read_sheet(spreadsheet_id="https://docs.google.com/spreads
 KETIKA USER MINTA PDF/ESSAY/ARTIKEL/LAPORAN: Gunakan generate_pdf. Isi content dalam format markdown, nanti otomatis dikonversi ke HTML yang rapi dengan tombol download.
 
 KETIKA USER MINTA POSTER/FLYER/PROMOSI/IKLAN BERGAMBAR: Gunakan generate_poster dengan metode yang sama (HTML siap cetak). Tentukan layout (poster=portrait, flyer=landscape), judul besar, subtitle, details (alamat/jam/telepon/promo), cta, dan imageKeyword bahasa Inggris yang cocok dengan tema usaha. JANGAN bilang tidak bisa membuat gambar — tool ini menghasilkan file HTML poster bergambar.
+
+=== ATURAN GAMBAR USER — WAJIB ===
+Ketika user mengirim gambar, kamu akan melihat catatan "[Gambar tersimpan ... id=X]" di pesannya.
+- PAKAI id itu sebagai image_id di generate_poster, generate_pdf, atau commit_image_to_repo sesuai permintaan user.
+- JANGAN tanya ulang ke user tentang gambar — gambar sudah ada, langsung pakai id-nya.
+- Jika user minta poster/flyer dari gambarnya sendiri: generate_poster(image_id="X").
+- Jika user minta simpan gambarnya ke repo GitHub: commit_image_to_repo(repo, image_id="X", path="..."). HANYA setelah konfirmasi eksplisit user.
+- Gambar otomatis dihapus setelah dipakai. Tidak perlu panggil delete_image kecuali user minta.
+- Untuk melihat gambar tersimpan: list_images(). Untuk hapus manual: delete_image(image_id="X").
 
 Untuk setiap pesan user, periksa apakah ada tool yang relevan. Jangan menjawab dengan teks biasa jika tool tersedia.`;
 

@@ -63,14 +63,19 @@ function fallbackGradient(accent) {
 }
 
 /**
- * args: { layout, title, subtitle, details[], cta, accent, imageKeyword }
+ * args: { layout, title, subtitle, details[], cta, accent, imageKeyword, bgImage }
  * layout: "poster" (portrait A4-ish) | "flyer" (landscape)
+ * bgImage: optional data URL from the user's uploaded image (stored in D1).
+ *          When present it is used directly and the Unsplash/imgix lookup is
+ *          skipped.
  */
 export async function generatePosterHtml(args) {
   const layout = args.layout === "flyer" ? "flyer" : "poster";
   const [W, H] = layout === "flyer" ? [1414, 1000] : [1000, 1414];
   const accent = /^#[0-9a-fA-F]{6}$/.test(args.accent || "") ? args.accent : "#ff5a5f";
-  const photo = await findPosterImage(args.imageKeyword || args.title || "event", W, H);
+  const photo = args.bgImage
+    ? { url: args.bgImage, author: null, authorLink: null }
+    : await findPosterImage(args.imageKeyword || args.title || "event", W, H);
 
   const detailsHtml = (args.details || [])
     .map((d) => {
@@ -86,7 +91,8 @@ export async function generatePosterHtml(args) {
     ? `url("${photo.url}") center/cover no-repeat`
     : fallbackGradient(accent);
 
-  const credit = photo
+  const isUnsplash = !!(photo && photo.author);
+  const credit = isUnsplash
     ? `Photo: <a href="${escapeHtml(photo.authorLink)}" target="_blank">${escapeHtml(photo.author)}</a> / Unsplash · `
     : "";
 
@@ -161,7 +167,7 @@ export async function generatePosterHtml(args) {
 <body>
 <div class="sheet">
   <div class="scrim"></div>
-  ${photo ? `<div class="credit">${credit}imgix</div>` : ""}
+  ${isUnsplash ? `<div class="credit">${credit}imgix</div>` : ""}
   <div class="inner">
     <div class="bar"></div>
     <h1>${escapeHtml(args.title || "Poster")}</h1>

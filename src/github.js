@@ -52,10 +52,11 @@ export async function pushFilesToGithub(pat, fullName, files) {
 
   const blobs = [];
   for (const f of files) {
+    const encoding = f.encoding === "base64" ? "base64" : "utf-8";
     const r = await fetch(`${base}/git/blobs`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ content: f.content, encoding: "utf-8" })
+      body: JSON.stringify({ content: f.content, encoding })
     });
     const b = await r.json();
     if (!r.ok) throw new Error(b?.message || "git blob error");
@@ -122,10 +123,13 @@ export async function commitToRepo(pat, fullName, message, files, branch = "main
 
   const blobs = [];
   for (const f of files) {
+    // f.encoding is optional: "utf-8" (text, default) or "base64" (binary,
+    // e.g. user-uploaded images committed straight to the repo).
+    const encoding = f.encoding === "base64" ? "base64" : "utf-8";
     const r = await fetch(`${base}/git/blobs`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ content: f.content, encoding: "utf-8" })
+      body: JSON.stringify({ content: f.content, encoding })
     });
     const b = await r.json();
     if (!r.ok) throw new Error(b?.message || "git blob error");

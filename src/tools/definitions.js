@@ -256,7 +256,8 @@ export const TOOL_DEFINITIONS = [
         properties: {
           title: { type: "string", description: "Judul dokumen" },
           content: { type: "string", description: "Isi dokumen dalam format markdown" },
-          filename: { type: "string", description: "Nama file (default: document.html)" }
+          filename: { type: "string", description: "Nama file (default: document.html)" },
+          image_id: { type: "string", description: "Opsional: id gambar yang user kirim (dari pesan \"Gambar tersimpan: id=X\"). Gambar akan disisipkan di awal dokumen." }
         },
         required: ["title", "content"]
       }
@@ -266,7 +267,7 @@ export const TOOL_DEFINITIONS = [
     type: "function",
     function: {
       name: "generate_poster",
-      description: 'Buat poster/flyer promosi bergambar sebagai file HTML (buka di browser, ada tombol Save PDF/Gambar). Panggil saat user minta "buat poster", "buat flyer", "bikin promosi", "poster event", "flyer diskon". Gambar latar otomatis diambil dari Unsplash via imgix berdasarkan imageKeyword.',
+      description: 'Buat poster/flyer promosi bergambar sebagai file HTML (buka di browser, ada tombol Save PDF/Gambar). Panggil saat user minta "buat poster", "buat flyer", "bikin promosi", "poster event", "flyer diskon". Gambar latar: pakai image_id jika user mengirim gambar sendiri, jika tidak otomatis dicari dari Unsplash via imgix berdasarkan imageKeyword.',
       parameters: {
         type: "object",
         properties: {
@@ -276,9 +277,49 @@ export const TOOL_DEFINITIONS = [
           details: { type: "array", items: { type: "string" }, description: "Baris detail: alamat, jam buka, telepon, promo, website (maks 6)" },
           cta: { type: "string", description: "Tombol ajakan, contoh: PESAN SEKARANG, BOOK NOW" },
           accent: { type: "string", description: "Warna utama hex, contoh: #ff5a5f (default merah)" },
-          imageKeyword: { type: "string", description: "Kata kunci gambar dalam BAHASA INGGRIS, contoh: barbershop, warkop coffee, motorcycle repair, laundry" }
+          image_id: { type: "string", description: "Opsional: id gambar yang user kirim (dari pesan \"Gambar tersimpan: id=X\"). Dipakai sebagai gambar latar poster." },
+          imageKeyword: { type: "string", description: "Kata kunci gambar BAHASA INGGRIS jika user TIDAK mengirim gambar, contoh: barbershop, motorcycle repair, laundry. Abaikan jika image_id diisi." }
         },
-        required: ["title", "imageKeyword"]
+        required: ["title"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_images",
+      description: "Lihat daftar gambar yang tersimpan sementara di D1 untuk chat ini (id, nama, ukuran). Panggil saat user tanya \"gambar apa saja\" atau sebelum memilih image_id.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_image",
+      description: "Hapus satu gambar tersimpan dari D1 berdasarkan id. Panggil saat user minta hapus gambar tertentu, atau otomatis setelah gambar dipakai (poster/pdf/github).",
+      parameters: {
+        type: "object",
+        properties: {
+          image_id: { type: "string", description: "id gambar yang akan dihapus" }
+        },
+        required: ["image_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "commit_image_to_repo",
+      description: "Commit gambar yang user kirim ke repo GitHub (binary, base64). Panggil saat user minta simpan/upload gambar ke repo. HANYA jika user konfirmasi eksplisit. Gambar otomatis dihapus dari D1 setelah berhasil.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string", description: "Full name repo (owner/repo)" },
+          image_id: { type: "string", description: "id gambar tersimpan" },
+          path: { type: "string", description: "Path file di repo, contoh: assets/logo.png" },
+          message: { type: "string", description: "Pesan commit" }
+        },
+        required: ["repo", "image_id", "path"]
       }
     }
   },

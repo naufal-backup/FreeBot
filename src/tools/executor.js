@@ -24,6 +24,17 @@ import { saveCustomTool, getCustomTools, deleteCustomTool, executeCustomTool } f
 import { getAllModels, resolveModelLabel, setActiveModel } from "../models.js";
 import { renderTemplate } from "../templates.js";
 import { getGoogleAccessToken, createGoogleDoc, readGoogleDoc, appendGoogleDoc, shareGoogleDoc, extractDocIdFromUrl, isPermissionError, permissionDeniedHint, extractSheetIdFromUrl, createGoogleSheet, readGoogleSheet, writeGoogleSheet, appendGoogleSheet } from "../google.js";
+import { getImage, listImages, deleteImage, deleteAllImages } from "../imageStore.js";
+
+// Escape a string for safe use inside an HTML attribute value.
+function escapeAttr(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 export async function toolWebsearch(query) {
   if (!query) return "Query tidak boleh kosong.";
@@ -312,6 +323,48 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         return `Commit berhasil ke ${repo} (${files.length} file). Pesan: "${message}"${storageInfo}`;
       }
 
+      case "commit_image_to_repo": {
+        const repo = args.repo;
+        const imageId = args.image_id;
+        const path = args.path;
+        if (!repo || !imageId || !path) return "repo, image_id, dan path harus diisi.";
+        console.log(`[SECURITY] commit_image_to_repo called: repo=${repo} path=${path} by user=${fromId}`);
+        if (!env.DB) return "D1 tidak tersedia.";
+        const img = await getImage(env, imageId, chatId);
+        if (!img) return `Gambar id=${imageId} tidak ditemukan atau sudah kedaluwarsa. Minta user kirim ulang gambarnya.`;
+        const pat = await getServiceToken(env, fromId, "github");
+        if (!pat) return "GitHub belum tersambung. Gunakan /login-gh dulu.";
+        const githubLogin = await validateGithubToken(pat);
+        if (!githubLogin) return "Token GitHub tidak valid.";
+        try {
+          await pullRepo(pat, repo, "main");
+        } catch (e) {
+          return `Pull gagal: ${e.message}. Commit dibatalkan.`;
+        }
+        // Commit binary content as base64 (commitToRepo honors f.encoding).
+        await commitToRepo(pat, repo, args.message || `Add ${path}`, [{ path, content: img.dataB64, encoding: "base64" }], "main");
+        // Auto-delete the image from D1 after a successful commit.
+        await deleteImage(env, imageId, chatId);
+        return `\u2705 Gambar **${img.fileName}** (${fmtBytes(img.sizeBytes)}) di-commit ke ${repo} sebagai \`${path}\`. Gambar sudah dihapus dari penyimpanan sementara.`;
+      }
+
+      case "list_images": {
+        const imgs = await listImages(env, chatId);
+        if (!imgs.length) return "Belum ada gambar tersimpan. Kirim gambar ke chat untuk menyimpannya sementara (kadaluarsa 30 menit).";
+        const lines = imgs.map((im) => `- id=${im.id} | ${im.fileName} | ${fmtBytes(im.sizeBytes)}`);
+        return `Gambar tersimpan (${imgs.length}):\n${lines.join("\n")}\n\nPakai id di generate_poster/generate_pdf (image_id) atau commit_image_to_repo.`;
+      }
+
+      case "delete_image": {
+        const imageId = args.image_id;
+        if (!imageId) return "image_id harus diisi.";
+        const before = await listImages(env, chatId);
+        const exists = before.some((im) => im.id === imageId);
+        if (!exists) return `Gambar id=${imageId} tidak ditemukan (mungkin sudah dihapus/kedaluwarsa).`;
+        await deleteImage(env, imageId, chatId);
+        return `\u2705 Gambar id=${imageId} dihapus dari penyimpanan sementara.`;
+      }
+
       case "list_repo_files": {
         const repo = args.repo;
         const folderPath = args.path || "";
@@ -499,21 +552,46 @@ export async function executeTool(toolCall, env, chatId, fromId) {
         const content = args.content || "";
         if (!content) return "Konten dokumen tidak boleh kosong.";
         const fileName = args.filename || "document.html";
-        const html = generatePdfHtml(title, markdownToHtml(content));
+        let bodyHtml = markdownToHtml(content);
+        // Optional user-uploaded image embedded at the top of the document.
+        if (args.image_id) {
+          const img = await getImage(env, args.image_id, chatId);
+          if (img) {
+            bodyHtml = `<div style="text-align:center;margin:0 0 1.5em"><img src="${img.dataUrl}" alt="${escapeAttr(img.fileName)}" style="max-width:100%;height:auto;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.18)"></div>` + bodyHtml;
+          }
+        }
+        const html = generatePdfHtml(title, bodyHtml);
         const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, html);
         if (!result.ok) return `\u274C Gagal mengirim dokumen: ${result.error}`;
-        return `\u2705 Dokumen **${title}** berhasil dikirim. Buka file lalu klik tombol "Download PDF" untuk menyimpan.`;
+        // Auto-delete the used image so D1 doesn't fill up.
+        if (args.image_id) await deleteImage(env, args.image_id, chatId);
+        return `\u2705 Dokumen **${title}** berhasil dikirim. Buka file lalu klik tombol "Download PDF" untuk menyimpan.${args.image_id ? " Gambar sudah dihapus dari penyimpanan sementara." : ""}`;
       }
 
       case "generate_poster": {
         const title = args.title || "Poster";
-        const keyword = args.imageKeyword || title;
         const layout = args.layout === "flyer" ? "flyer" : "poster";
         let details = args.details;
         if (typeof details === "string") {
           try { details = JSON.parse(details); } catch { details = details.split(/\n|;/).map((s) => s.trim()).filter(Boolean); }
         }
         if (!Array.isArray(details)) details = details ? [String(details)] : [];
+        // If the user uploaded an image, use it as the background; otherwise
+        // fall back to an Unsplash/imgix lookup by keyword.
+        let bgImage = null;
+        let usedImageId = null;
+        let sourceNote = "";
+        if (args.image_id) {
+          const img = await getImage(env, args.image_id, chatId);
+          if (img) {
+            bgImage = img.dataUrl;
+            usedImageId = args.image_id;
+            sourceNote = `gambar milikmu "${img.fileName}"`;
+          } else {
+            sourceNote = `gambar id=${args.image_id} tidak ditemukan (kedaluwarsa?), pakai Unsplash`;
+          }
+        }
+        const keyword = args.imageKeyword || title;
         const fileName = (layout + "-" + (title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "poster")) + ".html";
         const html = await generatePosterHtml({
           layout,
@@ -522,11 +600,15 @@ export async function executeTool(toolCall, env, chatId, fromId) {
           details: details.slice(0, 6),
           cta: args.cta,
           accent: args.accent,
-          imageKeyword: keyword
+          bgImage,
+          imageKeyword: bgImage ? undefined : keyword
         });
         const result = await sendTelegramDocument(env.TELEGRAM_TOKEN, chatId, fileName, html);
         if (!result.ok) return `\u274C Gagal mengirim poster: ${result.error}`;
-        return `\u2705 ${layout === "flyer" ? "Flyer" : "Poster"} **${title}** terkirim (gambar: "${keyword}"). Buka file di browser — tombol "Save PDF / Gambar" untuk simpan/cetak. Ganti gambar? Bilang saja keyword lain.`;
+        // Auto-delete the used image so D1 doesn't fill up.
+        if (usedImageId) await deleteImage(env, usedImageId, chatId);
+        const src = bgImage ? sourceNote : `Unsplash "${keyword}"`;
+        return `\u2705 ${layout === "flyer" ? "Flyer" : "Poster"} **${title}** terkirim (gambar: ${src}). Buka file di browser — tombol "Save PDF / Gambar" untuk simpan/cetak.${usedImageId ? " Gambar sudah dihapus dari penyimpanan sementara." : " Ganti gambar? Bilang saja keyword lain."}`;
       }
 
       case "google_create_doc": {

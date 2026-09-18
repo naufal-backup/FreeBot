@@ -5,6 +5,7 @@
 
 import { getActiveApi } from "./models.js";
 import { sendTelegram } from "./telegram.js";
+import { deleteExpiredImages } from "./imageStore.js";
 
 export async function runScheduledTasks(env, ctx) {
   if (!env.DB) {
@@ -77,5 +78,12 @@ export async function runScheduledTasks(env, ctx) {
     await env.DB.prepare("DELETE FROM processed_updates WHERE created_at < ?").bind(Date.now() - 7 * 86400000).run();
   } catch (e) {
     console.error("cleanup processed_updates:", e.message);
+  }
+
+  try {
+    const removed = await deleteExpiredImages(env);
+    if (removed) console.log("expired images swept: " + removed);
+  } catch (e) {
+    console.error("cleanup user_images:", e.message);
   }
 }
